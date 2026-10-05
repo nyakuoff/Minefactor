@@ -261,7 +261,9 @@ namespace mf
             floorZ = feetMc.z;
             const int cx = static_cast<int>(std::floor(floorX / 8)), cz = static_cast<int>(std::floor(floorZ / 8));
             const int topBlock = static_cast<int>(std::floor(floorTop));
-            const int ryLow = static_cast<int>(std::floor((topBlock - 1) / 8.0)), ryHigh = static_cast<int>(std::floor(topBlock / 8.0));
+            // Minecraft only lets go of a teleported player once the regions at and below its feet
+            // are known (SkyClient.holdPos), so send one empty layer above and below as well.
+            const int ryLow = static_cast<int>(std::floor((topBlock - 1) / 8.0)) - 1, ryHigh = static_cast<int>(std::floor(topBlock / 8.0)) + 1;
             for (int rz = cz - 4; rz <= cz + 4; ++rz)
             {
                 for (int rx = cx - 4; rx <= cx + 4; ++rx)
