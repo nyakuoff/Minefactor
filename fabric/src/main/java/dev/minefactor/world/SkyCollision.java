@@ -125,6 +125,14 @@ public final class SkyCollision {
 	}
 
 	/** True once Skyrim has sent the region containing this block (even if it was empty). */
+	/**
+	 * True where the host hasn't streamed this region's collision yet: treat it as a wall, so walking
+	 * ahead of the scan bumps into it instead of falling through the floor.
+	 */
+	public static boolean unknownIsSolid(BlockPos pos) {
+		return epoch > 0 && dev.minefactor.link.SkyLink.active() && !isKnown(pos.getX(), pos.getY(), pos.getZ());
+	}
+
 	public static boolean isKnown(int x, int y, int z) {
 		return KNOWN_REGIONS.contains(regionKey(Math.floorDiv(x, REGION_SIZE), Math.floorDiv(y, REGION_SIZE), Math.floorDiv(z, REGION_SIZE)));
 	}

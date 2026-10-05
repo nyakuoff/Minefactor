@@ -19,9 +19,12 @@ namespace mf
     {
         constexpr int kRegion = 8;          // blocks per region edge (SkyCollision.REGION_SIZE)
         constexpr int kUnits = kRegion * 8; // 1/8-block voxels per region edge
-        constexpr int kRadius = 4;          // regions around the player horizontally
+        constexpr int kRadius = 3;          // regions around the player horizontally
         constexpr int kBelow = 2, kAbove = 1;
-        constexpr double kBudgetMs = 3.0;   // per tick
+        constexpr double kBudgetMs = 5.0;   // per tick
+        // ponytail: 1/4-block cells (filled as 2x2x2 protocol voxels) cost ~5x fewer engine queries than
+        // 1/8; finer needs a worker thread (scene queries off the game thread) or reading shapes directly.
+        constexpr std::uint8_t kFinest = 2;
         constexpr std::uint64_t kRefreshMs = 5000;  // regions next to the player (doors, lifts)
 
         // Engine types, layouts from the game's PDB.
@@ -164,10 +167,13 @@ namespace mf
                 {
                     continue;
                 }
-                if (c.size == 1)
+                if (c.size == kFinest)
                 {
-                    const int bx = c.x / 8, by = c.y / 8, bz = c.z / 8;
-                    job.bits[bx + 8 * bz + 64 * by][c.y % 8] |= 1ull << ((c.z % 8) * 8 + (c.x % 8));
+                    for (int i = 0; i < kFinest * kFinest * kFinest; ++i)
+                    {
+                        const int x = c.x + i % kFinest, y = c.y + (i / kFinest) % kFinest, z = c.z + i / (kFinest * kFinest);
+                        job.bits[x / 8 + 8 * (z / 8) + 64 * (y / 8)][y % 8] |= 1ull << ((z % 8) * 8 + (x % 8));
+                    }
                     continue;
                 }
                 const std::uint8_t s = c.size / 2;

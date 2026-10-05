@@ -43,7 +43,7 @@ public abstract class BlockCollisionsMixin {
 		}
 		VoxelShape sky = SkyCollision.shapeAt(pos);
 		if (sky == null) {
-			return blockShape;
+			return SkyCollision.unknownIsSolid(pos) ? Shapes.block() : blockShape;
 		}
 		return blockShape.isEmpty() ? sky : Shapes.or(blockShape, sky);
 	}
