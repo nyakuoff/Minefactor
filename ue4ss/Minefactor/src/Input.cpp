@@ -130,6 +130,18 @@ namespace mf
 
         LRESULT CALLBACK Hook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         {
+            if (msg == WM_KEYDOWN && wp == VK_F8)
+            {
+                if (!(lp & (1 << 30)))
+                {
+                    ToggleMinecraft();
+                }
+                return 0;
+            }
+            if (msg == WM_KEYUP && wp == VK_F8)
+            {
+                return 0;
+            }
             if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp))
             {
                 Link::Get().PushInput(proto::kInReleaseAll, 0);

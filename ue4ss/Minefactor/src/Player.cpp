@@ -6,6 +6,7 @@
 
 #include <Unreal/CoreUObject/UObject/Class.hpp>
 #include <Unreal/CoreUObject/UObject/UnrealType.hpp>
+#include <Unreal/FText.hpp>
 #include <Unreal/FWeakObjectPtr.hpp>
 #include <Unreal/UObject.hpp>
 #include <Unreal/UObjectGlobals.hpp>
@@ -42,6 +43,8 @@ namespace mf
         proto::SkyState sky{};
         std::uint32_t lastMcPid = 0;
         bool puppeting = false;
+        bool enabled = false;        // F8: Minecraft drives the player
+        bool togglePending = false;  // set by the window hook, handled on the next tick
         bool movementOff = false;
         bool hostMenu = false;
         double halfHeight = 90.0;
@@ -164,6 +167,33 @@ namespace mf
             }
         }
 
+        // Abiotic Factor's HUD warning line. Level: 0 green, 1 gray, 2 yellow, 3 red, 4 purple.
+        void Message(UObject* pawn, const wchar_t* text, std::uint8_t level)
+        {
+            auto call = reflect::Begin(pawn, STR("Client_DisplayWarningMessage"));
+            if (!call)
+            {
+                return;
+            }
+            // Params in declaration order: Message (FText), CriticalityLevel (byte enum), WarningBeep (bool).
+            // ponytail: the FText is never destructed (a few bytes per message); fine for rare toggles.
+            int i = 0;
+            for (FProperty* prop : call.function->ForEachProperty())
+            {
+                void* at = &call.params[prop->GetOffset_Internal()];
+                if (i == 0)
+                {
+                    new (at) FText(text);
+                }
+                else if (i == 1)
+                {
+                    *static_cast<std::uint8_t*>(at) = level;
+                }
+                ++i;
+            }
+            reflect::Invoke(call);
+        }
+
         std::uint32_t Hash(const std::wstring& s)
         {
             std::uint32_t h = 2166136261u;  // FNV-1a
@@ -180,16 +210,14 @@ namespace mf
             return degrees > 180.0 ? degrees - 360.0 : degrees < -180.0 ? degrees + 360.0 : degrees;
         }
 
-        Vec3 teleportTarget{};
 
         // Minecraft moves its player to sky.pos (kept current while we aren't puppeting) when this
         // bumps, and holds it there until it has collision underneath (the floor follows the target).
-        void Teleport(const Vec3& feetMc)
+        void Teleport(const Vec3&)
         {
             ++sky.teleportSeq;
             puppeting = false;
             floorValid = false;
-            teleportTarget = feetMc;
         }
 
         // One 8-block collision region of the temporary floor: its top at floorTop.
@@ -302,6 +330,11 @@ namespace mf
         return hostMenu;
     }
 
+    void ToggleMinecraft()
+    {
+        togglePending = true;
+    }
+
     void PlayerTick()
     {
         auto& link = Link::Get();
@@ -347,7 +380,38 @@ namespace mf
         {
             lastMcPid = link.McPid();
             Teleport(UeToMc({loc.X, loc.Y, loc.Z - halfHeight}));
-            Log(L"Minecraft connected (pid {})", lastMcPid);
+            Log(L"Minecraft connected (pid {}); press F8 in game to hand it the controls", lastMcPid);
+        }
+
+        if (togglePending)
+        {
+            togglePending = false;
+            enabled = !enabled;
+            if (enabled && !mcInWorld)
+            {
+                enabled = false;
+                Message(pawn, L"Minefactor: Minecraft isn't running (start it with tools/play.sh)", 3);
+            }
+            else
+            {
+                Message(pawn, enabled ? L"Minefactor: Minecraft controls ON (F8 to turn off)" : L"Minefactor: Minecraft controls OFF", enabled ? 0 : 1);
+                if (enabled)
+                {
+                    SetMovementMode(pawn, kMoveNone);  // hold still while Minecraft comes to us
+                    movementOff = true;
+                    Teleport(UeToMc({loc.X, loc.Y, loc.Z - halfHeight}));
+                }
+            }
+            Log(L"F8: Minecraft controls {}", enabled ? L"on" : L"off");
+        }
+        if (!enabled || !mcInWorld)
+        {
+            if (enabled)
+            {
+                enabled = false;
+                Message(pawn, L"Minefactor: lost Minecraft; controls OFF", 3);
+            }
+            puppeting = false;
         }
 
         // The game moved the player itself (respawn, portal, cutscene): Minecraft follows.
@@ -356,45 +420,36 @@ namespace mf
             Log(L"game teleported the player; re-syncing Minecraft");
             Teleport(UeToMc({loc.X, loc.Y, loc.Z - halfHeight}));
         }
-        if (!mcInWorld)
-        {
-            puppeting = false;
-        }
         if (!puppeting)
         {
             const Vec3 feet = UeToMc({loc.X, loc.Y, loc.Z - halfHeight});
-            // Still loading in (the game spawns you somewhere, then moves you to your save spot).
-            if (std::hypot(feet.x - teleportTarget.x, feet.y - teleportTarget.y, feet.z - teleportTarget.z) > kTeleportCm / kCm)
-            {
-                Teleport(feet);
-            }
             sky.posX = feet.x;
             sky.posY = feet.y;
             sky.posZ = feet.z;
-            if (mcInWorld)
+            if (enabled)
             {
                 UpdateFloor(feet);  // Minecraft won't let go of the teleport until there's ground
+                if (mc.teleportAck == sky.teleportSeq)
+                {
+                    puppeting = true;
+                    Log(L"Minecraft now drives the player");
+                }
             }
-        }
-        else if (!puppeting && mc.teleportAck == sky.teleportSeq)
-        {
-            puppeting = true;
-            Log(L"Minecraft now drives the player");
         }
 
+        if (enabled && !movementOff)  // e.g. a new character after respawning
+        {
+            SetMovementMode(pawn, kMoveNone);
+            movementOff = true;
+        }
         if (puppeting)
         {
-            if (!movementOff)
-            {
-                SetMovementMode(pawn, kMoveNone);
-                movementOff = true;
-            }
             const Vec3 feet = McToUe({mc.x, mc.y, mc.z});
             lastSet = {feet.x, feet.y, feet.z + halfHeight};
             SetLocation(pawn, lastSet);
             UpdateFloor({mc.x, mc.y, mc.z});
         }
-        else if (movementOff)
+        else if (movementOff && !enabled)
         {
             SetMovementMode(pawn, kMoveWalking);
             movementOff = false;
