@@ -552,6 +552,13 @@ namespace mf
                 ClockCheck(mc);
             }
         }
-        link.WriteSkyState(sky);
+        // Minecraft renders one overlay frame per SkyState update (SkyClient paces on its seq): 60 Hz
+        // is plenty for HUD and hand, and keeps it from rendering + reading back at the game's 160 fps.
+        static std::uint64_t lastSkyWrite = 0;
+        if (now - lastSkyWrite >= 16)
+        {
+            lastSkyWrite = now;
+            link.WriteSkyState(sky);
+        }
     }
 }

@@ -21,7 +21,7 @@ namespace mf
         constexpr int kUnits = kRegion * 8; // 1/8-block voxels per region edge
         constexpr int kRadius = 3;          // regions around the player horizontally
         constexpr int kBelow = 2, kAbove = 1;
-        constexpr double kBudgetMs = 5.0;   // per tick
+        constexpr double kBudgetMs = 2.0;   // per tick
         // ponytail: 1/4-block cells (filled as 2x2x2 protocol voxels) cost ~5x fewer engine queries than
         // 1/8; finer needs a worker thread (scene queries off the game thread) or reading shapes directly.
         constexpr std::uint8_t kFinest = 2;

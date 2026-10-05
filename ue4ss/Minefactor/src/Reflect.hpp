@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <format>
 #include <new>
+#include <unordered_map>
 #include <vector>
 
 #include <Unreal/UObject.hpp>
@@ -69,7 +70,15 @@ namespace mf::reflect
         {
             return {};
         }
-        UFunction* fn = receiver->GetFunctionByNameInChain(functionName);
+        // Looked up by name once per (class, call site): the names are string literals.
+        static std::unordered_map<std::uint64_t, UFunction*> cache;
+        const auto key = reinterpret_cast<std::uint64_t>(receiver->GetClassPrivate()) * 31 ^ reinterpret_cast<std::uint64_t>(functionName);
+        auto [it, fresh] = cache.try_emplace(key, nullptr);
+        if (fresh)
+        {
+            it->second = receiver->GetFunctionByNameInChain(functionName);
+        }
+        UFunction* fn = it->second;
         if (!fn)
         {
             mf::LogLine(std::format(L"reflect: function '{}' not found on {}", functionName, receiver->GetName()));

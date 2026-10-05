@@ -500,7 +500,16 @@ namespace mf
             {
                 return;
             }
-            if (name == any && *damage > 0)
+            // The engine sends ReceivePointDamage/RadialDamage first, then (sometimes) ReceiveAnyDamage
+            // for the same hit: count the first one we see per hit.
+            static UObject* lastCauser = nullptr;
+            static std::uint64_t lastAt = 0;
+            UObject* hitCauser = ObjectParam(fn, parms, STR("DamageCauser"));
+            const auto nowMs = ::GetTickCount64();
+            const bool sameHit = name == any && hitCauser == lastCauser && nowMs - lastAt < 50;
+            lastCauser = hitCauser;
+            lastAt = nowMs;
+            if (!sameHit && *damage > 0)
             {
                 UObject* causer = ObjectParam(fn, parms, STR("DamageCauser"));
                 UObject* type = ObjectParam(fn, parms, STR("DamageType"));

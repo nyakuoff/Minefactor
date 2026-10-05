@@ -96,8 +96,12 @@ float4 PSMain(VSOut i) : SV_Target {
         UINT64 fenceValue = 0;
         HANDLE fenceEvent = nullptr;
         ID3D12Resource* texture = nullptr;  // overlay, R8G8B8A8
-        ID3D12Resource* upload = nullptr;   // persistently mapped staging copy
-        std::uint8_t* uploadPtr = nullptr;
+        // Staging copies, rotated so writing a new frame never waits on the GPU's copy of the last one.
+        constexpr UINT kUploads = 3;
+        ID3D12Resource* upload[kUploads]{};
+        std::uint8_t* uploadPtr[kUploads]{};
+        UINT64 uploadFence[kUploads]{};
+        UINT uploadNext = 0, uploadReady = 0;
         UINT texW = 0, texH = 0, uploadPitch = 0;
         bool texReady = false, flipY = false, pendingCopy = false;
 
@@ -244,10 +248,14 @@ float4 PSMain(VSOut i) : SV_Target {
             {
                 return true;
             }
-            WaitFor(fenceValue);  // nothing may still read the old ones
+            WaitFor(fenceValue);  // nothing may still read the old ones (size changes are rare)
             Release(texture);
-            Release(upload);
-            uploadPtr = nullptr;
+            for (UINT i = 0; i < kUploads; ++i)
+            {
+                Release(upload[i]);
+                uploadPtr[i] = nullptr;
+                uploadFence[i] = 0;
+            }
             texReady = false;
             D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT};
             D3D12_RESOURCE_DESC desc{D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, w, h, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_RESOURCE_FLAG_NONE};
@@ -258,11 +266,14 @@ float4 PSMain(VSOut i) : SV_Target {
             uploadPitch = (w * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
             D3D12_HEAP_PROPERTIES upHeap{D3D12_HEAP_TYPE_UPLOAD};
             D3D12_RESOURCE_DESC upDesc{D3D12_RESOURCE_DIMENSION_BUFFER, 0, UINT64(uploadPitch) * h, 1, 1, 1, DXGI_FORMAT_UNKNOWN, {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_NONE};
-            if (FAILED(device->CreateCommittedResource(&upHeap, D3D12_HEAP_FLAG_NONE, &upDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload))) ||
-                FAILED(upload->Map(0, nullptr, reinterpret_cast<void**>(&uploadPtr))))
+            for (UINT i = 0; i < kUploads; ++i)
             {
-                Release(texture);
-                return false;
+                if (FAILED(device->CreateCommittedResource(&upHeap, D3D12_HEAP_FLAG_NONE, &upDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload[i]))) ||
+                    FAILED(upload[i]->Map(0, nullptr, reinterpret_cast<void**>(&uploadPtr[i]))))
+                {
+                    Release(texture);
+                    return false;
+                }
             }
             D3D12_SHADER_RESOURCE_VIEW_DESC view{};
             view.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -340,12 +351,14 @@ float4 PSMain(VSOut i) : SV_Target {
                 const auto* hdr = link.FrontHeader();
                 if (hdr->width && hdr->height && hdr->width <= proto::kMaxOverlayW && hdr->height <= proto::kMaxOverlayH && EnsureTexture(hdr->width, hdr->height))
                 {
-                    WaitFor(fenceValue);  // the GPU may still be copying the previous frame out of it
+                    const UINT u = uploadNext++ % kUploads;
+                    WaitFor(uploadFence[u]);  // the copy out of this one was submitted kUploads frames ago
                     const auto* src = link.FrontPixels();
                     for (UINT y = 0; y < texH; ++y)
                     {
-                        std::memcpy(uploadPtr + std::size_t(y) * uploadPitch, src + std::size_t(y) * texW * 4, texW * 4);
+                        std::memcpy(uploadPtr[u] + std::size_t(y) * uploadPitch, src + std::size_t(y) * texW * 4, texW * 4);
                     }
+                    uploadReady = u;
                     flipY = (hdr->flags & 1) != 0;
                     pendingCopy = true;
                 }
@@ -356,6 +369,7 @@ float4 PSMain(VSOut i) : SV_Target {
                 return;
             }
 
+            int copiedFrom = -1;
             const UINT slot = frameSlot++ % kFrames;
             WaitFor(allocatorFence[slot]);
             allocators[slot]->Reset();
@@ -369,9 +383,10 @@ float4 PSMain(VSOut i) : SV_Target {
                 }
                 D3D12_TEXTURE_COPY_LOCATION dst{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
                 dst.SubresourceIndex = 0;
-                D3D12_TEXTURE_COPY_LOCATION src{upload, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+                D3D12_TEXTURE_COPY_LOCATION src{upload[uploadReady], D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
                 src.PlacedFootprint = {0, {DXGI_FORMAT_R8G8B8A8_UNORM, texW, texH, 1, uploadPitch}};
                 list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+                copiedFrom = static_cast<int>(uploadReady);
                 Barrier(texture, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                 pendingCopy = false;
                 texReady = true;
@@ -431,6 +446,10 @@ float4 PSMain(VSOut i) : SV_Target {
             origExecute(queue, 1, lists);
             queue->Signal(fence, ++fenceValue);
             allocatorFence[slot] = fenceValue;
+            if (copiedFrom >= 0)
+            {
+                uploadFence[copiedFrom] = fenceValue;
+            }
             swap->Release();
         }
 
