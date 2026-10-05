@@ -258,6 +258,37 @@ namespace mf
         return true;
     }
 
+    void Link::DrainRender(const std::function<void(std::uint32_t, const std::uint8_t*, std::uint32_t)>& fn, std::uint64_t maxBytes)
+    {
+        if (!base_)
+        {
+            return;
+        }
+        auto* ring = base_ + proto::kOffRenderRing;
+        auto& headRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kRenRingHeadOff);
+        auto& tailRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kRenRingTailOff);
+        const auto head = Atomic(headRef).load(std::memory_order_acquire);
+        auto tail = Atomic(tailRef).load(std::memory_order_relaxed);
+        auto* data = ring + proto::kRenRingDataOff;
+        constexpr auto size = proto::kRenRingDataBytes;
+        std::uint64_t done = 0;
+        while (tail < head && done < maxBytes)
+        {
+            const auto pos = tail % size;
+            const auto* hdr = reinterpret_cast<const proto::ColMsgHeader*>(data + pos);
+            if (hdr->type == proto::kRenPad)
+            {
+                tail += size - pos;
+                continue;
+            }
+            fn(hdr->type, data + pos + sizeof(proto::ColMsgHeader), hdr->payloadBytes);
+            const auto msgBytes = (sizeof(proto::ColMsgHeader) + hdr->payloadBytes + 7) & ~7ull;
+            tail += msgBytes;
+            done += msgBytes;
+        }
+        Atomic(tailRef).store(tail, std::memory_order_release);
+    }
+
     bool Link::AcquireOverlayFrame()
     {
         if (!base_)

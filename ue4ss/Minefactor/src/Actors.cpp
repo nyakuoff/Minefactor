@@ -367,8 +367,10 @@ namespace mf
             }
             if (hitsLogged++ < 10)
             {
-                Log(L"hit {} for {:.1f} ({:.1f} game damage, weapon {}): health {:.1f} -> {:.1f}", it->second.name[0] ? std::wstring(it->second.name, it->second.name + std::strlen(it->second.name)) : L"?",
-                    e.a, e.a * kMcToGameDamage, e.weapon, before, CallGet<float>(npc, STR("GetTotalHealth")));
+                const auto* dead = npc->GetValuePtrByPropertyName<bool>(STR("IsDead"));
+                Log(L"hit {} (#{}) for {:.1f} ({:.1f} game damage, weapon {}): health {:.1f} -> {:.1f}, IsDead {}",
+                    std::wstring(it->second.name, it->second.name + std::strlen(it->second.name)), e.formId, e.a, e.a * kMcToGameDamage, e.weapon,
+                    before, CallGet<float>(npc, STR("GetTotalHealth")), dead ? (*dead ? L"yes" : L"no") : L"?");
             }
         }
 
@@ -399,6 +401,8 @@ namespace mf
                 {
                     savedLimbs[i] = *limbs[i];
                 }
+                Log(L"guarding player health: head {:.0f} torso {:.0f} arms {:.0f}/{:.0f} legs {:.0f}/{:.0f}", savedLimbs[0], savedLimbs[1],
+                    savedLimbs[2], savedLimbs[3], savedLimbs[4], savedLimbs[5]);
                 return;
             }
             if (dying)

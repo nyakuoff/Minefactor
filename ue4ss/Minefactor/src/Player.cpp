@@ -191,6 +191,23 @@ namespace mf
             return shownZ;
         }
 
+        // Minecraft's feet at this moment on our clock, from its last two 20 Hz physics ticks (what its
+        // own renderer does with partial ticks; the clocks match, see ClockCheck), so the two games'
+        // frame rates don't beat against each other.
+        Vec3 InterpolatedFeet(const proto::McState& mc)
+        {
+            if (!mc.tickQpc || mc.tickMs <= 0)
+            {
+                return {mc.x, mc.y, mc.z};
+            }
+            LARGE_INTEGER now{}, freq{};
+            ::QueryPerformanceCounter(&now);
+            ::QueryPerformanceFrequency(&freq);
+            const double nowTicks = double(now.QuadPart) * (1.0e7 / double(freq.QuadPart));
+            const double a = std::clamp((nowTicks - double(mc.tickQpc)) / (double(mc.tickMs) * 1.0e4), 0.0, 1.0);
+            return {mc.prevX + (mc.curX - mc.prevX) * a, mc.prevY + (mc.curY - mc.prevY) * a, mc.prevZ + (mc.curZ - mc.prevZ) * a};
+        }
+
         bool BoolProperty(UObject* object, const TCHAR* name)
         {
             auto* prop = CastField<FBoolProperty>(object->GetClassPrivate()->FindProperty(FName(name, FNAME_Find)));
@@ -301,11 +318,13 @@ namespace mf
         // sky.teleportSeq bumps. We only bump once our own scan has ground under the player: the
         // level streams in after a load or long move, and Minecraft drops you if it isn't there.
         bool teleportPending = false;
+        bool waitLogged = false;
         std::uint64_t teleportAsked = 0;
 
         void Teleport(const Vec3&)
         {
             teleportPending = true;
+            waitLogged = false;
             teleportAsked = ::GetTickCount64();
             puppeting = false;
         }
@@ -316,12 +335,16 @@ namespace mf
             {
                 return;
             }
-            const auto waited = ::GetTickCount64() - teleportAsked;
-            if (CollisionGroundBelow(feet, 2.0) || waited > 10000)
+            if (CollisionGroundBelow(feet, 2.0))
             {
                 teleportPending = false;
                 ++sky.teleportSeq;
-                Log(L"Minecraft goes to ({:.2f}, {:.2f}, {:.2f}){}", feet.x, feet.y, feet.z, waited > 10000 ? L" without ground under it" : L"");
+                Log(L"Minecraft goes to ({:.2f}, {:.2f}, {:.2f})", feet.x, feet.y, feet.z);
+            }
+            else if (::GetTickCount64() - teleportAsked > 5000 && !waitLogged)
+            {
+                waitLogged = true;
+                Log(L"still waiting for ground under the player at ({:.2f}, {:.2f}, {:.2f}) (level streaming in?)", feet.x, feet.y, feet.z);
             }
         }
 
@@ -359,6 +382,9 @@ namespace mf
     {
         auto& link = Link::Get();
         link.Heartbeat();
+        // ponytail: render messages are dropped until Phase 4 draws blocks from them; they must be
+        // consumed anyway or Minecraft's render thread stalls on a full ring.
+        link.DrainRender([](std::uint32_t, const std::uint8_t*, std::uint32_t) {}, ~0ull);
         proto::McState mc{};
         const bool haveMc = link.McAlive() && link.ReadMcState(mc);
         const bool mcInWorld = haveMc && (mc.flags & proto::kMcInWorld);
@@ -478,7 +504,7 @@ namespace mf
         }
         if (puppeting)
         {
-            const Vec3 feet = McToUe({mc.x, mc.y, mc.z});
+            const Vec3 feet = McToUe(InterpolatedFeet(mc));
             lastSet = {feet.x, feet.y, SmoothZ(feet.z + halfHeight, mc.flags & proto::kMcOnGround)};
             SetLocation(pawn, lastSet);
         }

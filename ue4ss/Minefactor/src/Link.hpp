@@ -33,6 +33,9 @@ namespace mf
         bool WriteCollision(proto::ColType type, const void* payload, std::uint32_t bytes);
         // Actor table (producer; game thread): nearby NPCs Minecraft mirrors as hittable stand-ins.
         void WriteActors(const proto::ActorRecord* records, std::uint32_t count);
+        // Render ring (consumer): calls fn(type, payload, bytes) for each pending message, up to about
+        // maxBytes of payload. Minecraft stalls its render thread when this ring is full.
+        void DrainRender(const std::function<void(std::uint32_t, const std::uint8_t*, std::uint32_t)>& fn, std::uint64_t maxBytes);
         // Event ring (consumer). False when empty.
         bool PopEvent(proto::McEvent& out);
 

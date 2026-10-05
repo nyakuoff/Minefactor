@@ -79,6 +79,19 @@ namespace mf
 
         using Bits = std::array<std::array<std::uint64_t, 8>, kRegion * kRegion * kRegion>;  // [bx + 8bz + 64by][layer]
 
+        std::size_t Count(const Bits& bits)
+        {
+            std::size_t n = 0;
+            for (const auto& b : bits)
+            {
+                for (std::uint64_t v : b)
+                {
+                    n += static_cast<std::size_t>(__builtin_popcountll(v));
+                }
+            }
+            return n;
+        }
+
         struct Cell
         {
             std::uint8_t x, y, z, size;  // in 1/8 blocks, within the region
@@ -98,9 +111,10 @@ namespace mf
         {
             std::uint64_t at = 0;         // when last scanned
             std::unique_ptr<Bits> bits;   // null: empty
+            bool lossSeen = false;        // last scan lost most of it: confirm before telling Minecraft
         };
 
-        constexpr std::uint64_t kEmptyRecheckMs = 2000;  // empty may just mean "not streamed in yet"
+        constexpr std::uint64_t kEmptyRecheckMs = 500;   // empty may just mean "not streamed in yet" (1 query each)
 
         Job job;
         std::unordered_map<std::int64_t, Region> done;
@@ -232,7 +246,7 @@ namespace mf
                         {
                             const auto age = now - it->second.at;
                             const bool adjacent = std::abs(dx) <= 1 && std::abs(dz) <= 1 && (dy == 0 || dy == -1);
-                            if (it->second.bits ? !(adjacent && age > kRefreshMs) : age <= kEmptyRecheckMs)
+                            if (it->second.bits ? !((adjacent || it->second.lossSeen) && age > kRefreshMs) : age <= kEmptyRecheckMs)
                             {
                                 continue;
                             }
@@ -298,6 +312,16 @@ namespace mf
             const bool empty = std::all_of(job.bits.begin(), job.bits.end(),
                                            [](const auto& b) { return std::all_of(b.begin(), b.end(), [](std::uint64_t v) { return v == 0; }); });
             const bool changed = region.at == 0 || (empty ? region.bits != nullptr : !region.bits || *region.bits != job.bits);
+            // Level streaming swaps sublevels in and out; a floor that vanishes for one scan must
+            // not drop the player. Big losses only count once a second scan agrees.
+            if (changed && region.bits && Count(job.bits) * 2 < Count(*region.bits) && !region.lossSeen)
+            {
+                region.lossSeen = true;
+                region.at = now - kRefreshMs + 1000;  // look again in a second
+                job.active = false;
+                continue;
+            }
+            region.lossSeen = false;
             if (changed && !Send(epoch))
             {
                 break;  // ring full: try again next tick
