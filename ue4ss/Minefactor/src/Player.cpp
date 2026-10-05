@@ -119,7 +119,7 @@ namespace mf
 
         UObject* Component(UObject* actor, const TCHAR* property)
         {
-            auto** ptr = actor->GetValuePtrByPropertyName<UObject*>(property);
+            auto** ptr = actor->GetValuePtrByPropertyNameInChain<UObject*>(property);
             return ptr ? *ptr : nullptr;
         }
 
@@ -152,7 +152,7 @@ namespace mf
 
         void GameFallDamage(UObject* pawn, bool on)
         {
-            auto* flag = pawn->GetValuePtrByPropertyName<bool>(STR("TakeFallDamage"));
+            auto* flag = pawn->GetValuePtrByPropertyNameInChain<bool>(STR("TakeFallDamage"));
             if (!flag || on == !fallDamageOff)
             {
                 return;

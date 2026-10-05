@@ -156,7 +156,7 @@ namespace mf
 
         UObject* Component(UObject* actor, const wchar_t* property)
         {
-            auto** ptr = actor->GetValuePtrByPropertyName<UObject*>(property);
+            auto** ptr = actor->GetValuePtrByPropertyNameInChain<UObject*>(property);
             return ptr ? *ptr : nullptr;
         }
 
@@ -265,7 +265,7 @@ namespace mf
                     continue;
                 }
                 const FRot rot = CallGet<FRot>(actor, STR("K2_GetActorRotation"));
-                const auto* dead = actor->GetValuePtrByPropertyName<bool>(STR("IsDead"));
+                const auto* dead = actor->GetValuePtrByPropertyNameInChain<bool>(STR("IsDead"));
                 const float health = CallGet<float>(actor, STR("GetTotalHealth"));
                 const float maxHealth = CallGet<float>(actor, STR("GetMaxTotalHealth"));
                 proto::ActorRecord r{};
@@ -368,7 +368,7 @@ namespace mf
             }
             if (hitsLogged++ < 10)
             {
-                const auto* dead = npc->GetValuePtrByPropertyName<bool>(STR("IsDead"));
+                const auto* dead = npc->GetValuePtrByPropertyNameInChain<bool>(STR("IsDead"));
                 Log(L"hit {} (#{}) for {:.1f} ({:.1f} game damage, weapon {}): health {:.1f} -> {:.1f}, IsDead {}",
                     std::wstring(it->second.name, it->second.name + std::strlen(it->second.name)), e.formId, e.a, e.a * kMcToGameDamage, e.weapon,
                     before, CallGet<float>(npc, STR("GetTotalHealth")), dead ? (*dead ? L"yes" : L"no") : L"?");
@@ -388,7 +388,7 @@ namespace mf
             float* limbs[6];
             for (int i = 0; i < 6; ++i)
             {
-                limbs[i] = pawn->GetValuePtrByPropertyName<float>(kLimbs[i]);
+                limbs[i] = pawn->GetValuePtrByPropertyNameInChain<float>(kLimbs[i]);
                 if (!limbs[i])
                 {
                     return;
@@ -428,7 +428,7 @@ namespace mf
                 reflect::Invoke(rep);
             }
             std::uint32_t attacker = 0;
-            if (auto** by = pawn->GetValuePtrByPropertyName<UObject*>(STR("LastHitBy")); by && *by)
+            if (auto** by = pawn->GetValuePtrByPropertyNameInChain<UObject*>(STR("LastHitBy")); by && *by)
             {
                 attacker = static_cast<std::uint32_t>((*by)->GetInternalIndex());
             }
@@ -481,6 +481,12 @@ namespace mf
             if (!guardedPawn || context != guardedPawn || dying || !parms)
             {
                 return;
+            }
+            // Discovery: every distinct event the game sends the player while Minecraft drives it.
+            static std::set<std::uint32_t> seen;
+            if (seen.size() < 400 && seen.insert(fn->GetNamePrivate().GetComparisonIndex()).second)
+            {
+                Log(L"player event: {}", fn->GetName());
             }
             static const FName any(STR("ReceiveAnyDamage"), FNAME_Find), point(STR("ReceivePointDamage"), FNAME_Find),
                 radial(STR("ReceiveRadialDamage"), FNAME_Find);

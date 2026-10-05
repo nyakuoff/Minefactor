@@ -4,6 +4,7 @@
 // the queue the game renders with), then draw one fullscreen triangle before each Present.
 #include "Overlay.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <d3d12.h>
 #include <d3dcompiler.h>
@@ -312,9 +313,30 @@ float4 PSMain(VSOut i) : SV_Target {
                 return;
             }
 
+            // Delivery stats every 10 s (HUD smoothness): our presents vs Minecraft frames, worst gap.
+            static UINT64 statPresents = 0, statFrames = 0, statStart = 0, lastFrameAt = 0, worstGap = 0;
+            const UINT64 nowMs = ::GetTickCount64();
+            if (!statStart)
+            {
+                statStart = nowMs;
+            }
+            ++statPresents;
+            if (nowMs - statStart >= 10000)
+            {
+                if (show.load())
+                {
+                    Log(L"overlay: {} presents, {} Minecraft frames in {:.1f} s; longest gap between Minecraft frames {} ms", statPresents, statFrames,
+                        (nowMs - statStart) / 1000.0, worstGap);
+                }
+                statPresents = statFrames = worstGap = 0;
+                statStart = nowMs;
+            }
             // Newest Minecraft frame into the staging buffer (the copy to the texture is recorded below).
             if (link.AcquireOverlayFrame())
             {
+                ++statFrames;
+                worstGap = std::max<UINT64>(worstGap, lastFrameAt ? nowMs - lastFrameAt : 0);
+                lastFrameAt = nowMs;
                 const auto* hdr = link.FrontHeader();
                 if (hdr->width && hdr->height && hdr->width <= proto::kMaxOverlayW && hdr->height <= proto::kMaxOverlayH && EnsureTexture(hdr->width, hdr->height))
                 {
