@@ -1,5 +1,6 @@
 #include "Player.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 #include <windows.h>
@@ -141,6 +142,52 @@ namespace mf
             }
             reflect::Invoke(call);
             return reflect::Get<float>(call, STR("ReturnValue"));
+        }
+
+        // The game's own fall damage stays off while Minecraft (which has its own) moves the player:
+        // our small per-frame position steps on stairs otherwise count as falls.
+        bool fallDamageOff = false;
+        bool fallDamageWas = true;
+
+        void GameFallDamage(UObject* pawn, bool on)
+        {
+            auto* flag = pawn->GetValuePtrByPropertyName<bool>(STR("TakeFallDamage"));
+            if (!flag || on == !fallDamageOff)
+            {
+                return;
+            }
+            if (!on)
+            {
+                fallDamageWas = *flag;
+            }
+            *flag = on ? fallDamageWas : false;
+            fallDamageOff = !on;
+        }
+
+        // Shown height: Minecraft steps up stairs and voxel edges instantly; ease small changes in so
+        // the camera doesn't jump (visual only, Minecraft's physics are untouched).
+        bool haveShown = false;
+        double shownZ = 0;
+        LARGE_INTEGER lastTick{};
+
+        double SmoothZ(double target, bool onGround)
+        {
+            LARGE_INTEGER now{}, freq{};
+            ::QueryPerformanceCounter(&now);
+            ::QueryPerformanceFrequency(&freq);
+            const double dt = lastTick.QuadPart ? double(now.QuadPart - lastTick.QuadPart) / double(freq.QuadPart) : 0.0;
+            lastTick = now;
+            if (!haveShown || std::abs(target - shownZ) > 60.0)  // more than a step: teleport or fast fall
+            {
+                shownZ = target;
+                haveShown = true;
+            }
+            else
+            {
+                // On the ground: ~70 ms to settle a stair step. In the air: catch up quickly (jumps).
+                shownZ += (target - shownZ) * std::min(1.0, dt * (onGround ? 15.0 : 40.0));
+            }
+            return shownZ;
         }
 
         bool BoolProperty(UObject* object, const TCHAR* name)
@@ -325,7 +372,7 @@ namespace mf
                 Log(L"player character gone (menu or loading)");
             }
             lastPawn = nullptr;
-            puppeting = movementOff = false;
+            puppeting = movementOff = fallDamageOff = false;
             overlay::show = false;
             hudHidden = false;
             hudRef = FWeakObjectPtr{};
@@ -338,6 +385,7 @@ namespace mf
         if (pawn != lastPawn)
         {
             lastPawn = pawn;
+            fallDamageOff = false;
             halfHeight = CapsuleHalfHeight(pawn);
             movementOff = false;
             const auto world = pawn->GetWorld();
@@ -414,6 +462,14 @@ namespace mf
             }
         }
 
+        if (!puppeting)
+        {
+            haveShown = false;
+        }
+        if (pawn)
+        {
+            GameFallDamage(pawn, !enabled);
+        }
         if (enabled && !movementOff)  // e.g. a new character after respawning
         {
             SetMovementMode(pawn, kMoveNone);
@@ -422,7 +478,7 @@ namespace mf
         if (puppeting)
         {
             const Vec3 feet = McToUe({mc.x, mc.y, mc.z});
-            lastSet = {feet.x, feet.y, feet.z + halfHeight};
+            lastSet = {feet.x, feet.y, SmoothZ(feet.z + halfHeight, mc.flags & proto::kMcOnGround)};
             SetLocation(pawn, lastSet);
         }
         else if (movementOff && !enabled)
