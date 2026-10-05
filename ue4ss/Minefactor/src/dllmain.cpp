@@ -6,6 +6,7 @@
 #include "Input.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
+#include "Overlay.hpp"
 #include "Player.hpp"
 
 using namespace RC;
@@ -29,6 +30,7 @@ public:
             mf::Log(L"no shared memory; Minefactor is off for this session");
             return;
         }
+        mf::overlay::Install();
         // Engine tick runs on the game thread, where reflected calls are safe.
         Hook::RegisterEngineTickPreCallback(
             [](auto&, ...) {

@@ -236,4 +236,38 @@ namespace mf
         Atomic(tailRef).store(tail + 1, std::memory_order_release);
         return true;
     }
+
+    bool Link::AcquireOverlayFrame()
+    {
+        if (!base_)
+        {
+            return false;
+        }
+        auto& state = At<proto::OverlayCtl>(proto::kOffOverlayCtl)->state;
+        if (!(Atomic(state).load(std::memory_order_acquire) & proto::kOverlayDirty))
+        {
+            return false;
+        }
+        overlayFront_ = Atomic(state).exchange(overlayFront_, std::memory_order_acq_rel) & 3;
+        return true;
+    }
+
+    void Link::ResetOverlay()
+    {
+        if (base_)
+        {
+            Atomic(At<proto::OverlayCtl>(proto::kOffOverlayCtl)->state).store(0, std::memory_order_release);
+            overlayFront_ = 2;
+        }
+    }
+
+    const std::uint8_t* Link::FrontPixels() const
+    {
+        return base_ + proto::kOffOverlayPixels + proto::kOverlaySlotBytes * overlayFront_;
+    }
+
+    const proto::OverlaySlotHdr* Link::FrontHeader() const
+    {
+        return At<proto::OverlaySlotHdr>(proto::kOffOverlaySlotHdr + sizeof(proto::OverlaySlotHdr) * overlayFront_);
+    }
 }

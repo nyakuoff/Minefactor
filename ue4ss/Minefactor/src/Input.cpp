@@ -1,11 +1,13 @@
 #include "Input.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <windows.h>
 
 #include "Link.hpp"
 #include "Log.hpp"
+#include "Overlay.hpp"
 #include "Player.hpp"
 
 namespace mf
@@ -82,7 +84,8 @@ namespace mf
             case WM_SYSKEYUP: {
                 const bool down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
                 const std::uint32_t dik = ((lp >> 16) & 0xFF) | ((lp & (1 << 24)) ? 0x80 : 0);
-                if (dik == kDikEscape || dik == kDikConsole || dik == kDikG)
+                // Esc closes an open Minecraft screen; otherwise it's the game's menu.
+                if ((dik == kDikEscape && !overlay::screenOpen) || dik == kDikConsole || dik == kDikG)
                 {
                     return false;
                 }
@@ -104,12 +107,32 @@ namespace mf
                 }
                 return true;
             }
+            case WM_INPUT: {
+                // While a Minecraft screen is open the mouse moves its cursor, not the game's view.
+                if (!overlay::screenOpen)
+                {
+                    return false;
+                }
+                RAWINPUT raw{};
+                UINT size = sizeof(raw);
+                if (::GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) != UINT(-1) &&
+                    raw.header.dwType == RIM_TYPEMOUSE && !(raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
+                {
+                    const int w = overlay::viewportW, h = overlay::viewportH;
+                    const int x = std::clamp(overlay::cursorX + static_cast<int>(raw.data.mouse.lLastX), 0, std::max(w - 1, 0));
+                    const int y = std::clamp(overlay::cursorY + static_cast<int>(raw.data.mouse.lLastY), 0, std::max(h - 1, 0));
+                    overlay::cursorX = x;
+                    overlay::cursorY = y;
+                    link.PushInput(proto::kInCursor, 0, x, y);
+                }
+                return true;
+            }
             case WM_CHAR:
                 if (wp >= 0x20 && wp != 0x7F)
                 {
                     link.PushInput(proto::kInText, 0, static_cast<std::int32_t>(wp));
                 }
-                return wp != 0x1B;  // Esc's WM_CHAR stays the game's, like its keydown
+                return wp != 0x1B || overlay::screenOpen;  // Esc's WM_CHAR follows its keydown
             case WM_LBUTTONDOWN: Button(1, true); return true;
             case WM_LBUTTONUP: Button(1, false); return true;
             case WM_MBUTTONDOWN: Button(2, true); return true;

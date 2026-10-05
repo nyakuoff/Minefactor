@@ -34,11 +34,20 @@ namespace mf
         // Event ring (consumer). False when empty.
         bool PopEvent(proto::McEvent& out);
 
+        // Overlay triple buffer (consumer; render thread). True if a newer frame was swapped into the
+        // front slot; FrontPixels/FrontHeader describe the current front slot.
+        bool AcquireOverlayFrame();
+        // Minecraft (re)connected: its writer starts at slot 1, so restart the swap from scratch.
+        void ResetOverlay();
+        [[nodiscard]] const std::uint8_t* FrontPixels() const;
+        [[nodiscard]] const proto::OverlaySlotHdr* FrontHeader() const;
+
     private:
         template <class T>
         T* At(std::uint64_t off) const { return reinterpret_cast<T*>(base_ + off); }
 
         std::uint8_t* base_{nullptr};
+        std::uint32_t overlayFront_{2};
         std::uint64_t lastMcBeat_{0};
         std::uint64_t lastMcBeatChange_{0};
     };

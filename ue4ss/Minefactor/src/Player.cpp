@@ -16,6 +16,7 @@
 #include "Coords.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
+#include "Overlay.hpp"
 #include "Reflect.hpp"
 
 using namespace RC::Unreal;
@@ -192,6 +193,45 @@ namespace mf
             reflect::Invoke(call);
         }
 
+        // Abiotic Factor's own HUD, hidden while Minecraft's is drawn instead.
+        FWeakObjectPtr hudRef;
+        bool hudHidden = false;
+        std::uint8_t hudVisibility = 0;
+
+        void HideHostHud(bool hide)
+        {
+            if (hide == hudHidden)
+            {
+                return;
+            }
+            UObject* hud = hudRef.Get();
+            if (!hud)
+            {
+                hud = UObjectGlobals::FindFirstOf(STR("UW_PlayerHUD_Main_C"));
+                hudRef = hud;
+            }
+            if (!hud)
+            {
+                return;
+            }
+            if (hide)
+            {
+                auto get = reflect::Begin(hud, STR("GetVisibility"));
+                if (get)
+                {
+                    reflect::Invoke(get);
+                    hudVisibility = reflect::Get<std::uint8_t>(get, STR("ReturnValue"));
+                }
+            }
+            auto set = reflect::Begin(hud, STR("SetVisibility"));
+            if (set)
+            {
+                reflect::Set<std::uint8_t>(set, STR("InVisibility"), hide ? 2 : hudVisibility);  // 2: ESlateVisibility::Hidden
+                reflect::Invoke(set);
+                hudHidden = hide;
+            }
+        }
+
         std::uint32_t Hash(const std::wstring& s)
         {
             std::uint32_t h = 2166136261u;  // FNV-1a
@@ -286,6 +326,9 @@ namespace mf
             }
             lastPawn = nullptr;
             puppeting = movementOff = false;
+            overlay::show = false;
+            hudHidden = false;
+            hudRef = FWeakObjectPtr{};
             sky.flags = proto::kSkyLoading;
             link.WriteSkyState(sky);
             return;
@@ -311,6 +354,7 @@ namespace mf
         {
             lastMcPid = link.McPid();
             Teleport(UeToMc({loc.X, loc.Y, loc.Z - halfHeight}));
+            overlay::reset = true;
             Log(L"Minecraft connected (pid {}); press F8 in game to hand it the controls", lastMcPid);
         }
 
@@ -400,6 +444,17 @@ namespace mf
         sky.pitch = static_cast<float>(UePitchToMc(Normalize(rot.Pitch)));
         hostMenu = BoolProperty(pc, STR("bShowMouseCursor"));
         sky.flags = proto::kSkyInGame | (hostMenu ? proto::kSkyMenuOpen : 0u);
+        const bool mcScreen = puppeting && (mc.flags & proto::kMcScreenOpen);
+        if (mcScreen && !overlay::screenOpen)
+        {
+            overlay::cursorX = static_cast<int>(sky.viewportW / 2);  // Minecraft screens open with the cursor centred
+            overlay::cursorY = static_cast<int>(sky.viewportH / 2);
+        }
+        overlay::screenOpen = mcScreen;
+        overlay::show = puppeting && !hostMenu;
+        overlay::crosshair = puppeting && mc.cameraMode == 0 && !mcScreen && !hostMenu;
+        overlay::guiScale = static_cast<int>(mc.guiScale);
+        HideHostHud(puppeting);
         sky.gameHour = 12.0f;
 
         const auto now = ::GetTickCount64();
