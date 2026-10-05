@@ -13,6 +13,7 @@
 #include <Unreal/UObjectGlobals.hpp>
 #include <Unreal/World.hpp>
 
+#include "Actors.hpp"
 #include "Collision.hpp"
 #include "Coords.hpp"
 #include "Link.hpp"
@@ -493,6 +494,8 @@ namespace mf
             const Vec3 here = puppeting ? Vec3{mc.x, mc.y, mc.z} : UeToMc({loc.X, loc.Y, loc.Z - halfHeight});
             CollisionTick(pawn->GetWorld(), here, sky.collisionEpoch);
         }
+
+        ActorsTick(pawn);
 
         // Look stays the game's own (its mouse handling, zero latency); Minecraft follows it.
         const FRot rot = ControlRotation(pc);

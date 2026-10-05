@@ -6,6 +6,7 @@ add_library(Minefactor SHARED
     src/Input.cpp
     src/Collision.cpp
     src/Overlay.cpp
+    src/Actors.cpp
 )
 set_target_properties(Minefactor PROPERTIES OUTPUT_NAME "main" PREFIX "")
 target_include_directories(Minefactor PRIVATE src "${CMAKE_CURRENT_SOURCE_DIR}/../../protocol")
