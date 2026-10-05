@@ -12,3 +12,4 @@ ue4ss/build/
 __pycache__/
 *.pyc
 dist/
+ue4ss/RE-UE4SS/
