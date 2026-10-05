@@ -32,6 +32,7 @@ public:
             return;
         }
         mf::overlay::Install();
+        mf::InstallDamageHook();
         // Engine tick runs on the game thread, where reflected calls are safe.
         Hook::RegisterEngineTickPreCallback(
             [](auto&, ...) {

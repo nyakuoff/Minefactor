@@ -12,6 +12,7 @@
 #include <Unreal/CoreUObject/UObject/Class.hpp>
 #include <Unreal/CoreUObject/UObject/UnrealType.hpp>
 #include <Unreal/FWeakObjectPtr.hpp>
+#include <Unreal/Hooks/Hooks.hpp>
 #include <Unreal/UObject.hpp>
 #include <Unreal/UObjectGlobals.hpp>
 
@@ -435,6 +436,75 @@ namespace mf
             Log(L"player took {:.1f} game damage -> {:.1f} Minecraft", lost, lost / kGameToMcDamage);
         }
 
+        // Damage events on the guarded player, caught before the game's own handlers run: the amount
+        // goes to Minecraft, and the game gets 0 (Minecraft's health is the one that counts).
+        UObject* guardedPawn = nullptr;
+
+        float* FloatParam(UFunction* fn, void* parms, const wchar_t* name)
+        {
+            FProperty* p = fn->FindProperty(FName(name, FNAME_Find));
+            return p ? reinterpret_cast<float*>(static_cast<std::uint8_t*>(parms) + p->GetOffset_Internal()) : nullptr;
+        }
+
+        UObject* ObjectParam(UFunction* fn, void* parms, const wchar_t* name)
+        {
+            FProperty* p = fn->FindProperty(FName(name, FNAME_Find));
+            return p ? *reinterpret_cast<UObject**>(static_cast<std::uint8_t*>(parms) + p->GetOffset_Internal()) : nullptr;
+        }
+
+        std::uint16_t HurtKind(UObject* damageType)
+        {
+            if (!damageType)
+            {
+                return proto::kHurtMelee;
+            }
+            const auto name = damageType->GetName();
+            for (const wchar_t* w : {L"Bullet", L"Bolt", L"Crossbow", L"Quill", L"Throwing", L"Dart", L"Rocket"})
+            {
+                if (name.find(w) != std::wstring::npos)
+                {
+                    return proto::kHurtProjectile;
+                }
+            }
+            for (const wchar_t* w : {L"Fire", L"Acid", L"Plasma", L"Electro", L"Radiation", L"Laser", L"Holy"})
+            {
+                if (name.find(w) != std::wstring::npos)
+                {
+                    return proto::kHurtMagic;
+                }
+            }
+            return proto::kHurtMelee;
+        }
+
+        void OnProcessEvent(UObject* context, UFunction* fn, void* parms)
+        {
+            if (!guardedPawn || context != guardedPawn || dying || !parms)
+            {
+                return;
+            }
+            static const FName any(STR("ReceiveAnyDamage"), FNAME_Find), point(STR("ReceivePointDamage"), FNAME_Find),
+                radial(STR("ReceiveRadialDamage"), FNAME_Find);
+            const FName name = fn->GetNamePrivate();
+            if (name != any && name != point && name != radial)
+            {
+                return;
+            }
+            float* damage = FloatParam(fn, parms, STR("Damage"));
+            if (!damage)
+            {
+                return;
+            }
+            if (name == any && *damage > 0)
+            {
+                UObject* causer = ObjectParam(fn, parms, STR("DamageCauser"));
+                UObject* type = ObjectParam(fn, parms, STR("DamageType"));
+                const auto attacker = causer ? static_cast<std::uint32_t>(causer->GetInternalIndex()) : 0u;
+                Link::Get().PushInput(proto::kInHurt, HurtKind(type), static_cast<std::int32_t>(*damage * 100.0f), static_cast<std::int32_t>(attacker), 0);
+                Log(L"player hit for {:.1f} game damage ({}) -> {:.1f} Minecraft", *damage, type ? type->GetName() : std::wstring(L"?"), *damage / kGameToMcDamage);
+            }
+            *damage = 0.0f;
+        }
+
         // Minecraft's player died: so does the game's (its own death and respawn run).
         void KillPlayer(UObject* pawn)
         {
@@ -463,6 +533,7 @@ namespace mf
             nextList = now + 1000;
             ListNpcs(pawn);
         }
+        guardedPawn = puppeting ? pawn : nullptr;
         if (!puppeting)
         {
             savedFor = nullptr;
@@ -491,5 +562,11 @@ namespace mf
             }
         }
         GuardPlayerHealth(pawn);
+    }
+
+    void InstallDamageHook()
+    {
+        Hook::RegisterProcessEventPreCallback([](auto&, UObject* context, UFunction* fn, void* parms) { OnProcessEvent(context, fn, parms); },
+                                              {false, false, STR("Minefactor"), STR("PlayerDamage")});
     }
 }
