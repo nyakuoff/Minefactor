@@ -1,0 +1,14 @@
+#pragma once
+#include <cstdint>
+
+#include "Coords.hpp"
+
+namespace mf
+{
+    // Streams the level's collision around the player to Minecraft as 1/8-block voxels, asking the
+    // engine's own physics what blocks a player. Call once per tick (game thread) while Minecraft
+    // is in its world; epoch changes (new map) start over.
+    void CollisionTick(void* world, const Vec3& playerMc, std::uint32_t epoch);
+    // True once the region holding this Minecraft position has been sent.
+    bool CollisionReady(const Vec3& mc);
+}

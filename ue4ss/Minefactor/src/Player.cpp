@@ -12,6 +12,7 @@
 #include <Unreal/UObjectGlobals.hpp>
 #include <Unreal/World.hpp>
 
+#include "Collision.hpp"
 #include "Coords.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
@@ -49,9 +50,6 @@ namespace mf
         bool hostMenu = false;
         double halfHeight = 90.0;
         FVec lastSet{};
-        // ponytail: temporary flat floor under the player until Collision.cpp streams the real level.
-        bool floorValid = false;
-        double floorTop = 0, floorX = 0, floorZ = 0;
 
         UObject* Controller()
         {
@@ -212,97 +210,11 @@ namespace mf
 
 
         // Minecraft moves its player to sky.pos (kept current while we aren't puppeting) when this
-        // bumps, and holds it there until it has collision underneath (the floor follows the target).
+        // bumps, and holds it there until it has collision underneath.
         void Teleport(const Vec3&)
         {
             ++sky.teleportSeq;
             puppeting = false;
-            floorValid = false;
-        }
-
-        // One 8-block collision region of the temporary floor: its top at floorTop.
-        void SendFloorRegion(int rx, int ry, int rz)
-        {
-            const int x0 = rx * 8, y0 = ry * 8, z0 = rz * 8;
-            const int topBlock = static_cast<int>(std::floor(floorTop));
-            const int layers = static_cast<int>(std::lround((floorTop - topBlock) * 8.0));  // 1/8ths in the top block
-            const int surfaceBlock = layers ? topBlock : topBlock - 1;
-            proto::ColRegion region{x0, y0, z0, x0 + 7, y0 + 7, z0 + 7, sky.collisionEpoch, 0};
-
-            std::vector<std::uint8_t> tris(sizeof(region));
-            if (surfaceBlock >= y0 && surfaceBlock <= y0 + 7)
-            {
-                const float y = static_cast<float>(floorTop), ax = float(x0), az = float(z0), bx = float(x0 + 8), bz = float(z0 + 8);
-                const proto::ColTri t[2] = {{{ax, y, az, bx, y, az, bx, y, bz}, 0}, {{ax, y, az, bx, y, bz, ax, y, bz}, 0}};
-                tris.insert(tris.end(), reinterpret_cast<const std::uint8_t*>(t), reinterpret_cast<const std::uint8_t*>(t) + sizeof(t));
-                region.count = 2;
-            }
-            std::memcpy(tris.data(), &region, sizeof(region));
-            Link::Get().WriteCollision(proto::kColTris, tris.data(), static_cast<std::uint32_t>(tris.size()));
-
-            std::vector<proto::ColBlock> blocks;
-            for (int y = y0; y <= y0 + 7; ++y)
-            {
-                std::uint64_t bits[8]{};
-                if (y < topBlock)
-                {
-                    std::fill(std::begin(bits), std::end(bits), ~0ull);
-                }
-                else if (y == topBlock)
-                {
-                    std::fill(bits, bits + layers, ~0ull);
-                }
-                if (!bits[0])
-                {
-                    continue;
-                }
-                for (int z = z0; z <= z0 + 7; ++z)
-                {
-                    for (int x = x0; x <= x0 + 7; ++x)
-                    {
-                        proto::ColBlock b{x, y, z, 0, {}};
-                        std::memcpy(b.bits, bits, sizeof(bits));
-                        blocks.push_back(b);
-                    }
-                }
-            }
-            region.count = static_cast<std::uint32_t>(blocks.size());
-            std::vector<std::uint8_t> payload(sizeof(region) + blocks.size() * sizeof(proto::ColBlock));
-            std::memcpy(payload.data(), &region, sizeof(region));
-            std::memcpy(payload.data() + sizeof(region), blocks.data(), blocks.size() * sizeof(proto::ColBlock));
-            Link::Get().WriteCollision(proto::kColRegion, payload.data(), static_cast<std::uint32_t>(payload.size()));
-        }
-
-        // Re-centres the floor when the player has walked far from where it was last sent.
-        void UpdateFloor(const Vec3& feetMc)
-        {
-            if (!floorValid)
-            {
-                floorTop = std::floor(feetMc.y * 8.0) / 8.0;
-            }
-            else if (std::abs(feetMc.x - floorX) < 16 && std::abs(feetMc.z - floorZ) < 16)
-            {
-                return;
-            }
-            floorValid = true;
-            floorX = feetMc.x;
-            floorZ = feetMc.z;
-            const int cx = static_cast<int>(std::floor(floorX / 8)), cz = static_cast<int>(std::floor(floorZ / 8));
-            const int topBlock = static_cast<int>(std::floor(floorTop));
-            // Minecraft only lets go of a teleported player once the regions at and below its feet
-            // are known (SkyClient.holdPos), so send one empty layer above and below as well.
-            const int ryLow = static_cast<int>(std::floor((topBlock - 1) / 8.0)) - 1, ryHigh = static_cast<int>(std::floor(topBlock / 8.0)) + 1;
-            for (int rz = cz - 4; rz <= cz + 4; ++rz)
-            {
-                for (int rx = cx - 4; rx <= cx + 4; ++rx)
-                {
-                    for (int ry = ryLow; ry <= ryHigh; ++ry)
-                    {
-                        SendFloorRegion(rx, ry, rz);
-                    }
-                }
-            }
-            Log(L"temporary floor at y {:.3f} around ({:.1f}, {:.1f})", floorTop, floorX, floorZ);
         }
 
         void ClockCheck(const proto::McState& mc)
@@ -371,7 +283,6 @@ namespace mf
             {
                 sky.worldId = worldId;
                 ++sky.collisionEpoch;
-                floorValid = false;
             }
             Teleport(UeToMc({loc.X, loc.Y, loc.Z - halfHeight}));
             Log(L"player character {} (capsule half height {:.1f} cm), world {:08X}", pawn->GetName(), halfHeight, sky.worldId);
@@ -424,11 +335,12 @@ namespace mf
         {
             const Vec3 feet = UeToMc({loc.X, loc.Y, loc.Z - halfHeight});
             sky.posX = feet.x;
-            sky.posY = feet.y;
+            // Up to the next 1/8 block: the floor's top voxel may poke above the real surface, and
+            // Minecraft never pushes you out of collision you start inside.
+            sky.posY = std::ceil(feet.y * 8.0) / 8.0 + 0.001;
             sky.posZ = feet.z;
             if (enabled)
             {
-                UpdateFloor(feet);  // Minecraft won't let go of the teleport until there's ground
                 if (mc.teleportAck == sky.teleportSeq)
                 {
                     puppeting = true;
@@ -447,13 +359,18 @@ namespace mf
             const Vec3 feet = McToUe({mc.x, mc.y, mc.z});
             lastSet = {feet.x, feet.y, feet.z + halfHeight};
             SetLocation(pawn, lastSet);
-            UpdateFloor({mc.x, mc.y, mc.z});
         }
         else if (movementOff && !enabled)
         {
             SetMovementMode(pawn, kMoveWalking);
             movementOff = false;
             Log(L"Minecraft gone; the game drives the player again");
+        }
+
+        if (mcInWorld)
+        {
+            const Vec3 here = puppeting ? Vec3{mc.x, mc.y, mc.z} : UeToMc({loc.X, loc.Y, loc.Z - halfHeight});
+            CollisionTick(pawn->GetWorld(), here, sky.collisionEpoch);
         }
 
         // Look stays the game's own (its mouse handling, zero latency); Minecraft follows it.

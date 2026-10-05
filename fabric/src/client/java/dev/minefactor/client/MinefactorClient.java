@@ -53,9 +53,8 @@ public final class MinefactorClient implements ClientModInitializer {
 		});
 		// Skyrim draws the real NPC; its Minecraft stand-in is only a hitbox.
 		EntityRendererRegistry.register(SkyCombat.SKYRIM_ACTOR, NoopRenderer::new);
-		// Players (client-side movement AND the integrated server's re-check of it) use the smooth
-		// triangle collider, never Skyrim's voxels; otherwise the server sees the smooth position
-		// dip into a voxel and teleports the player back every few ticks.
-		dev.minefactor.world.SkyCollision.setSmoothCollider(e -> e instanceof net.minecraft.world.entity.player.Player && SkyClient.linked());
+		// Abiotic Factor streams 1/8-block voxels only (no triangles), so everyone, players included,
+		// collides with those; client and server then agree and nobody gets rubber-banded.
+		dev.minefactor.world.SkyCollision.setSmoothCollider(e -> false);
 	}
 }
