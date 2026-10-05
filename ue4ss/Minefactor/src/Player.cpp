@@ -209,12 +209,32 @@ namespace mf
         }
 
 
-        // Minecraft moves its player to sky.pos (kept current while we aren't puppeting) when this
-        // bumps, and holds it there until it has collision underneath.
+        // Minecraft moves its player to sky.pos (kept current while we aren't puppeting) when
+        // sky.teleportSeq bumps. We only bump once our own scan has ground under the player: the
+        // level streams in after a load or long move, and Minecraft drops you if it isn't there.
+        bool teleportPending = false;
+        std::uint64_t teleportAsked = 0;
+
         void Teleport(const Vec3&)
         {
-            ++sky.teleportSeq;
+            teleportPending = true;
+            teleportAsked = ::GetTickCount64();
             puppeting = false;
+        }
+
+        void TeleportWhenGrounded(const Vec3& feet)
+        {
+            if (!teleportPending)
+            {
+                return;
+            }
+            const auto waited = ::GetTickCount64() - teleportAsked;
+            if (CollisionGroundBelow(feet, 2.0) || waited > 10000)
+            {
+                teleportPending = false;
+                ++sky.teleportSeq;
+                Log(L"Minecraft goes to ({:.2f}, {:.2f}, {:.2f}){}", feet.x, feet.y, feet.z, waited > 10000 ? L" without ground under it" : L"");
+            }
         }
 
         void ClockCheck(const proto::McState& mc)
@@ -341,7 +361,8 @@ namespace mf
             sky.posZ = feet.z;
             if (enabled)
             {
-                if (mc.teleportAck == sky.teleportSeq)
+                TeleportWhenGrounded(feet);
+                if (!teleportPending && mc.teleportAck == sky.teleportSeq)
                 {
                     puppeting = true;
                     Log(L"Minecraft now drives the player");

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <memory>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -73,6 +74,8 @@ namespace mf
             return true;
         }
 
+        using Bits = std::array<std::array<std::uint64_t, 8>, kRegion * kRegion * kRegion>;  // [bx + 8bz + 64by][layer]
+
         struct Cell
         {
             std::uint8_t x, y, z, size;  // in 1/8 blocks, within the region
@@ -83,13 +86,21 @@ namespace mf
             bool active = false;
             int rx = 0, ry = 0, rz = 0;
             std::vector<Cell> stack;
-            std::array<std::array<std::uint64_t, 8>, kRegion * kRegion * kRegion> bits{};  // [bx + 8bz + 64by][layer]
+            Bits bits{};
             std::uint32_t queries = 0;
             double ms = 0;
         };
 
+        struct Region
+        {
+            std::uint64_t at = 0;         // when last scanned
+            std::unique_ptr<Bits> bits;   // null: empty
+        };
+
+        constexpr std::uint64_t kEmptyRecheckMs = 2000;  // empty may just mean "not streamed in yet"
+
         Job job;
-        std::unordered_map<std::int64_t, std::uint64_t> done;  // region -> when sent
+        std::unordered_map<std::int64_t, Region> done;
         std::uint32_t lastEpoch = ~0u;
         std::uint64_t regionsSent = 0;
         std::uint64_t nextForget = 0;
@@ -197,7 +208,8 @@ namespace mf
             return Link::Get().WriteCollision(proto::kColRegion, payload.data(), static_cast<std::uint32_t>(payload.size()));
         }
 
-        // Nearest region never sent; else the stalest one next to the player.
+        // Nearest region that is unscanned, or stale: empty ones every 2 s (cheap, and the level may
+        // have streamed in since), solid ones next to the player every 5 s (doors, lifts).
         bool Next(const Vec3& p, std::uint64_t now)
         {
             const int px = RegionOf(p.x), py = RegionOf(p.y), pz = RegionOf(p.z);
@@ -210,20 +222,16 @@ namespace mf
                     for (int dx = -kRadius; dx <= kRadius; ++dx)
                     {
                         const auto it = done.find(Key(px + dx, py + dy, pz + dz));
-                        const bool adjacent = std::abs(dx) <= 1 && std::abs(dz) <= 1 && (dy == 0 || dy == -1);
-                        double dist;
-                        if (it == done.end())
+                        if (it != done.end())
                         {
-                            dist = dx * dx + dz * dz + dy * dy * 4.0;  // the floor you're on beats the one below
+                            const auto age = now - it->second.at;
+                            const bool adjacent = std::abs(dx) <= 1 && std::abs(dz) <= 1 && (dy == 0 || dy == -1);
+                            if (it->second.bits ? !(adjacent && age > kRefreshMs) : age <= kEmptyRecheckMs)
+                            {
+                                continue;
+                            }
                         }
-                        else if (adjacent && now - it->second > kRefreshMs)
-                        {
-                            dist = 1000.0 + double(now - it->second) * -1e-6;  // after all new ones, stalest first
-                        }
-                        else
-                        {
-                            continue;
-                        }
+                        const double dist = dx * dx + dz * dz + dy * dy * 4.0;  // the floor you're on beats the one below
                         if (dist < bestDist)
                         {
                             bestDist = dist;
@@ -280,11 +288,16 @@ namespace mf
             {
                 break;
             }
-            if (!Send(epoch))
+            auto& region = done[Key(job.rx, job.ry, job.rz)];
+            const bool empty = std::all_of(job.bits.begin(), job.bits.end(),
+                                           [](const auto& b) { return std::all_of(b.begin(), b.end(), [](std::uint64_t v) { return v == 0; }); });
+            const bool changed = region.at == 0 || (empty ? region.bits != nullptr : !region.bits || *region.bits != job.bits);
+            if (changed && !Send(epoch))
             {
                 break;  // ring full: try again next tick
             }
-            done[Key(job.rx, job.ry, job.rz)] = now;
+            region.at = now;
+            region.bits = empty ? nullptr : std::make_unique<Bits>(job.bits);
             job.active = false;
             if (++regionsSent % 50 == 1)
             {
@@ -298,8 +311,24 @@ namespace mf
         }
     }
 
-    bool CollisionReady(const Vec3& mc)
+    bool CollisionGroundBelow(const Vec3& feet, double depth)
     {
-        return done.contains(Key(RegionOf(mc.x), RegionOf(mc.y), RegionOf(mc.z)));
+        const int vx = static_cast<int>(std::floor(feet.x * 8)), vz = static_cast<int>(std::floor(feet.z * 8));
+        const int top = static_cast<int>(std::floor(feet.y * 8 + 0.5));  // feet may sit a hair below the voxel top
+        for (int vy = top; vy >= top - static_cast<int>(depth * 8); --vy)
+        {
+            const auto it = done.find(Key(RegionOf(vx / 8.0), RegionOf(vy / 8.0), RegionOf(vz / 8.0)));
+            if (it == done.end() || !it->second.bits)
+            {
+                continue;
+            }
+            const auto mod = [](int v, int m) { return ((v % m) + m) % m; };
+            const int bx = mod(vx >> 3, kRegion), by = mod(vy >> 3, kRegion), bz = mod(vz >> 3, kRegion);
+            if ((*it->second.bits)[bx + 8 * bz + 64 * by][mod(vy, 8)] >> (mod(vz, 8) * 8 + mod(vx, 8)) & 1)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }
