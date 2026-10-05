@@ -180,11 +180,16 @@ namespace mf
             return degrees > 180.0 ? degrees - 360.0 : degrees < -180.0 ? degrees + 360.0 : degrees;
         }
 
-        // Minecraft moves its player to sky.pos (kept current while we aren't puppeting) when this bumps.
-        void Teleport()
+        Vec3 teleportTarget{};
+
+        // Minecraft moves its player to sky.pos (kept current while we aren't puppeting) when this
+        // bumps, and holds it there until it has collision underneath (the floor follows the target).
+        void Teleport(const Vec3& feetMc)
         {
             ++sky.teleportSeq;
             puppeting = false;
+            floorValid = false;
+            teleportTarget = feetMc;
         }
 
         // One 8-block collision region of the temporary floor: its top at floorTop.
@@ -333,13 +338,13 @@ namespace mf
                 ++sky.collisionEpoch;
                 floorValid = false;
             }
-            Teleport();
+            Teleport(UeToMc({loc.X, loc.Y, loc.Z - halfHeight}));
             Log(L"player character {} (capsule half height {:.1f} cm), world {:08X}", pawn->GetName(), halfHeight, sky.worldId);
         }
         if (haveMc && link.McPid() != lastMcPid)
         {
             lastMcPid = link.McPid();
-            Teleport();
+            Teleport(UeToMc({loc.X, loc.Y, loc.Z - halfHeight}));
             Log(L"Minecraft connected (pid {})", lastMcPid);
         }
 
@@ -347,7 +352,7 @@ namespace mf
         if (puppeting && std::hypot(loc.X - lastSet.X, loc.Y - lastSet.Y, loc.Z - lastSet.Z) > kTeleportCm)
         {
             Log(L"game teleported the player; re-syncing Minecraft");
-            Teleport();
+            Teleport(UeToMc({loc.X, loc.Y, loc.Z - halfHeight}));
         }
         if (!mcInWorld)
         {
@@ -356,9 +361,18 @@ namespace mf
         if (!puppeting)
         {
             const Vec3 feet = UeToMc({loc.X, loc.Y, loc.Z - halfHeight});
+            // Still loading in (the game spawns you somewhere, then moves you to your save spot).
+            if (std::hypot(feet.x - teleportTarget.x, feet.y - teleportTarget.y, feet.z - teleportTarget.z) > kTeleportCm / kCm)
+            {
+                Teleport(feet);
+            }
             sky.posX = feet.x;
             sky.posY = feet.y;
             sky.posZ = feet.z;
+            if (mcInWorld)
+            {
+                UpdateFloor(feet);  // Minecraft won't let go of the teleport until there's ground
+            }
         }
         else if (!puppeting && mc.teleportAck == sky.teleportSeq)
         {
