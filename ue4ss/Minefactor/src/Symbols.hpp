@@ -7,4 +7,5 @@ namespace mf::sym
     inline constexpr std::uint32_t kExeTimestamp = 0xAC5766D4;
     inline constexpr std::uintptr_t UWorld_OverlapBlockingTestByChannel = 0x34ADBA0;
     inline constexpr std::uintptr_t FCollisionQueryParams_DefaultQueryParam = 0x84C3B20;
+    inline constexpr std::uintptr_t StaticLoadClass = 0x12E3490;
 }

@@ -31,6 +31,8 @@ namespace mf
         void PushInput(proto::InputType type, std::uint16_t code, std::int32_t a = 0, std::int32_t b = 0, std::int32_t c = 0);
         // Collision ring (producer; one thread only). False if the ring is full.
         bool WriteCollision(proto::ColType type, const void* payload, std::uint32_t bytes);
+        // Actor table (producer; game thread): nearby NPCs Minecraft mirrors as hittable stand-ins.
+        void WriteActors(const proto::ActorRecord* records, std::uint32_t count);
         // Event ring (consumer). False when empty.
         bool PopEvent(proto::McEvent& out);
 

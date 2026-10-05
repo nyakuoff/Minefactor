@@ -1,5 +1,6 @@
 #include "Link.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <immintrin.h>
@@ -211,6 +212,26 @@ namespace mf
         std::memcpy(data + pos + sizeof(proto::ColMsgHeader), payload, bytes);
         Atomic(headRef).store(head + msgBytes, std::memory_order_release);
         return true;
+    }
+
+    void Link::WriteActors(const proto::ActorRecord* records, std::uint32_t count)
+    {
+        if (!base_)
+        {
+            return;
+        }
+        auto* table = At<proto::ActorTable>(proto::kOffActorTable);
+        auto seq = Atomic(table->seq);
+        const auto s = seq.load(std::memory_order_relaxed);
+        seq.store(s + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        count = std::min(count, proto::kMaxActors);
+        table->count = count;
+        if (count)
+        {
+            std::memcpy(table->actors, records, sizeof(proto::ActorRecord) * count);
+        }
+        seq.store(s + 2, std::memory_order_release);
     }
 
     bool Link::PopEvent(proto::McEvent& out)

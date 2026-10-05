@@ -1,4 +1,5 @@
 #pragma once
+#include "minefactor_protocol.h"
 
 namespace RC::Unreal
 {
@@ -7,7 +8,10 @@ namespace RC::Unreal
 
 namespace mf
 {
-    // Phase 3 groundwork: logs, once per class, the health/damage-looking members of the game's NPCs
-    // and of the player, so combat can target the right ones. Call every tick (game thread).
-    void ActorsTick(RC::Unreal::UObject* pawn);
+    // Combat bridge (game thread, every tick): mirrors nearby NPCs into Minecraft, applies Minecraft's
+    // hits to them through the game's damage path, and turns damage the player takes into Minecraft
+    // hurts (the game's limbs are put back: Minecraft's health is the one that counts).
+    void ActorsTick(RC::Unreal::UObject* pc, RC::Unreal::UObject* pawn, bool puppeting, const minefactor::proto::McState& mc);
+    // Once, ~10 s after startup (main menu is fine): load a few NPC classes and log their members.
+    void ActorsDiscoverOnce();
 }

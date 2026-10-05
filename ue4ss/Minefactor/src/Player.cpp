@@ -495,7 +495,7 @@ namespace mf
             CollisionTick(pawn->GetWorld(), here, sky.collisionEpoch);
         }
 
-        ActorsTick(pawn);
+        ActorsTick(pc, pawn, puppeting, mc);
 
         // Look stays the game's own (its mouse handling, zero latency); Minecraft follows it.
         const FRot rot = ControlRotation(pc);

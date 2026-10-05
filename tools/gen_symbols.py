@@ -10,6 +10,7 @@ import os, re, struct, subprocess, sys
 SYMBOLS = {  # C++ name in Symbols.hpp -> MSVC mangled name
     "UWorld_OverlapBlockingTestByChannel": "?OverlapBlockingTestByChannel@UWorld@@QEBA_NAEBU?$TVector@N@Math@UE@@AEBU?$TQuat@N@34@W4ECollisionChannel@@AEBUFCollisionShape@@AEBUFCollisionQueryParams@@AEBUFCollisionResponseParams@@@Z",
     "FCollisionQueryParams_DefaultQueryParam": "?DefaultQueryParam@FCollisionQueryParams@@2U1@A",
+    "StaticLoadClass": "?StaticLoadClass@@YAPEAVUClass@@PEAV1@PEAVUObject@@PEB_W2IPEAVUPackageMap@@@Z",
 }
 
 exe = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser(

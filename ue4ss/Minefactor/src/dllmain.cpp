@@ -3,6 +3,7 @@
 #include <Mod/CppUserModBase.hpp>
 #include <Unreal/Hooks/Hooks.hpp>
 
+#include "Actors.hpp"
 #include "Input.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
@@ -35,6 +36,7 @@ public:
         Hook::RegisterEngineTickPreCallback(
             [](auto&, ...) {
                 mf::InputInstall();
+                mf::ActorsDiscoverOnce();
                 mf::PlayerTick();
             },
             {false, false, STR("Minefactor"), STR("Tick")});
