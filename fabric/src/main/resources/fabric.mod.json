@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "minefactor",
+  "version": "${version}",
+  "name": "Minefactor",
+  "description": "Play Abiotic Factor with Minecraft physics, inventory and viewmodels (fork of SkyCraft).",
+  "authors": ["loganp", "chasmlol (SkyCraft)"],
+  "contact": {
+    "sources": "https://github.com/chasmlol/SkyCraft"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "main": ["dev.minefactor.Minefactor"],
+    "client": ["dev.minefactor.client.MinefactorClient"]
+  },
+  "mixins": [
+    "minefactor.mixins.json",
+    { "config": "minefactor.client.mixins.json", "environment": "client" }
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}

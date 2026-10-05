@@ -1,0 +1,14 @@
+# gradle / loom
+fabric/.gradle/
+fabric/build/
+fabric/run/
+fabric/out/
+# ue4ss native build
+ue4ss/build/
+# ide
+.idea/
+*.iml
+.vscode/
+__pycache__/
+*.pyc
+dist/
