@@ -284,11 +284,6 @@ namespace mf
                 reflect::Set(call, STR("NewViewTarget"), on && camera ? camera : pawn);
                 reflect::Invoke(call);
             }
-            if (auto call = reflect::Begin(pawn, STR("SetActorHiddenInGame")))
-            {
-                reflect::Set(call, STR("bNewHidden"), on);
-                reflect::Invoke(call);
-            }
             Log(L"third person {}", on ? L"on" : L"off");
         }
 
@@ -637,6 +632,18 @@ namespace mf
         }
 
         ThirdPerson(pc, pawn, mc, puppeting && mc.cameraMode != 0);
+        // The game's own character (first-person arms, held item, body) is hidden while Minecraft
+        // drives it: Minecraft draws the hand in its overlay and the body in third person.
+        static UObject* hiddenPawn = nullptr;
+        if ((hiddenPawn == pawn) != puppeting)
+        {
+            if (auto call = reflect::Begin(pawn, STR("SetActorHiddenInGame")))
+            {
+                reflect::Set(call, STR("bNewHidden"), puppeting);
+                reflect::Invoke(call);
+            }
+            hiddenPawn = puppeting ? pawn : nullptr;
+        }
 
         // Look stays the game's own (its mouse handling, zero latency); Minecraft follows it.
         const FRot rot = ControlRotation(pc);

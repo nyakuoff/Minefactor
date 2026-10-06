@@ -891,7 +891,8 @@ namespace mf
                 }
                 // ponytail: intensity/reach by eye (unitless 5000 is the engine default); no shadows for cost.
                 const float level = l[i].level / 15.0f;
-                const float intensity = 6000.0f * level;
+                const bool lava = ((l[i].color >> 24) & 0xF) == proto::kLightLava;  // a lake of it is many lights
+                const float intensity = 6000.0f * level * (lava ? 0.3f : 1.0f);
                 if (auto call = reflect::Begin(c, STR("SetIntensity")))
                 {
                     reflect::Set(call, STR("NewIntensity"), intensity);
@@ -899,7 +900,7 @@ namespace mf
                 }
                 if (auto call = reflect::Begin(c, STR("SetAttenuationRadius")))
                 {
-                    reflect::Set(call, STR("NewRadius"), l[i].level * 100.0f + 100.0f);
+                    reflect::Set(call, STR("NewRadius"), (l[i].level * 100.0f + 100.0f) * (lava ? 0.6f : 1.0f));
                     reflect::Invoke(call);
                 }
                 if (auto call = reflect::Begin(c, STR("SetLightColor")))

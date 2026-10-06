@@ -108,24 +108,30 @@ namespace mf
                 return true;
             }
             case WM_INPUT: {
-                // While a Minecraft screen is open the mouse moves its cursor, not the game's view.
-                if (!overlay::screenOpen)
+                RAWINPUT raw{};
+                UINT size = sizeof(raw);
+                if (::GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) == UINT(-1) ||
+                    raw.header.dwType != RIM_TYPEMOUSE)
                 {
                     return false;
                 }
-                RAWINPUT raw{};
-                UINT size = sizeof(raw);
-                if (::GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) != UINT(-1) &&
-                    raw.header.dwType == RIM_TYPEMOUSE && !(raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
+                // While a Minecraft screen is open the mouse moves its cursor, not the game's view.
+                if (overlay::screenOpen)
                 {
-                    const int w = overlay::viewportW, h = overlay::viewportH;
-                    const int x = std::clamp(overlay::cursorX + static_cast<int>(raw.data.mouse.lLastX), 0, std::max(w - 1, 0));
-                    const int y = std::clamp(overlay::cursorY + static_cast<int>(raw.data.mouse.lLastY), 0, std::max(h - 1, 0));
-                    overlay::cursorX = x;
-                    overlay::cursorY = y;
-                    link.PushInput(proto::kInCursor, 0, x, y);
+                    if (!(raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
+                    {
+                        const int w = overlay::viewportW, h = overlay::viewportH;
+                        const int x = std::clamp(overlay::cursorX + static_cast<int>(raw.data.mouse.lLastX), 0, std::max(w - 1, 0));
+                        const int y = std::clamp(overlay::cursorY + static_cast<int>(raw.data.mouse.lLastY), 0, std::max(h - 1, 0));
+                        overlay::cursorX = x;
+                        overlay::cursorY = y;
+                        link.PushInput(proto::kInCursor, 0, x, y);
+                    }
+                    return true;
                 }
-                return true;
+                // The game reads mouse buttons and the wheel from raw input too: those packets are
+                // Minecraft's (it gets them as WM_*BUTTON* / WM_MOUSEWHEEL); movement stays the game's look.
+                return raw.data.mouse.usButtonFlags != 0;
             }
             case WM_CHAR:
                 if (wp >= 0x20 && wp != 0x7F)
