@@ -84,7 +84,7 @@ namespace mf
 
     namespace
     {
-        constexpr double kMcToGameDamage = 6.0;   // Minecraft hit -> game damage (diamond sword 7 -> 42)
+        constexpr double kMcToGameDamage = 16.0;  // Minecraft hit -> game damage (diamond sword 7 -> 112)
         constexpr double kGameToMcDamage = 15.0;  // must match SkyCombat.SKYRIM_TO_MC_DAMAGE (pest bite 35 -> 2.3)
         constexpr double kMirrorRadius = 64.0;    // blocks
 
