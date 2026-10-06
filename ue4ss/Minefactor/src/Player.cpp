@@ -20,6 +20,7 @@
 #include "Log.hpp"
 #include "Overlay.hpp"
 #include "Perf.hpp"
+#include "Render.hpp"
 #include "Reflect.hpp"
 
 using namespace RC::Unreal;
@@ -400,9 +401,7 @@ namespace mf
         }
         auto& link = Link::Get();
         link.Heartbeat();
-        // ponytail: render messages are dropped until Phase 4 draws blocks from them; they must be
-        // consumed anyway or Minecraft's render thread stalls on a full ring.
-        link.DrainRender([](std::uint32_t, const std::uint8_t*, std::uint32_t) {}, ~0ull);
+
         proto::McState mc{};
         const bool haveMc = link.McAlive() && link.ReadMcState(mc);
         const bool mcInWorld = haveMc && (mc.flags & proto::kMcInWorld);
@@ -410,6 +409,10 @@ namespace mf
         UObject* pc = Controller();
         UObject* pawn = pc ? Pawn(pc) : nullptr;
         const bool inGame = pawn && pawn->GetClassPrivate()->GetName().starts_with(STR("Abiotic_PlayerCharacter"));
+        {
+            perf::Scope r(perf::Render);
+            RenderTick(inGame ? pawn : nullptr, sky.collisionEpoch);
+        }
         if (!inGame)
         {
             if (lastPawn)
@@ -550,7 +553,12 @@ namespace mf
         const FRot rot = ControlRotation(pc);
         sky.yaw = static_cast<float>(Normalize(UeYawToMc(rot.Yaw)));
         sky.pitch = static_cast<float>(UePitchToMc(Normalize(rot.Pitch)));
-        hostMenu = BoolProperty(pc, STR("bShowMouseCursor"));
+        const bool menu = BoolProperty(pc, STR("bShowMouseCursor"));
+        if (menu != hostMenu && puppeting)
+        {
+            Log(L"game menu {}", menu ? L"open (input to the game)" : L"closed (input to Minecraft)");
+        }
+        hostMenu = menu;
         // The game loads zones when you walk into their level volumes; until they're in, the floor
         // ahead may not exist. Minecraft parks its player while we say "loading" (and only lets go
         // once our scan has ground under it), like the game holds its own player.
@@ -586,7 +594,7 @@ namespace mf
             overlay::cursorY = static_cast<int>(sky.viewportH / 2);
         }
         overlay::screenOpen = mcScreen;
-        overlay::show = puppeting && !hostMenu;
+        overlay::show = puppeting;  // Minecraft's HUD stays up behind the game's menus
         overlay::crosshair = puppeting && mc.cameraMode == 0 && !mcScreen && !hostMenu;
         overlay::guiScale = static_cast<int>(mc.guiScale);
         HideHostHud(puppeting);

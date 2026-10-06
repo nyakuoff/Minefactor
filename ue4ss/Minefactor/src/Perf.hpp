@@ -13,9 +13,10 @@ namespace mf::perf
         Actors,
         Position,   // K2_SetActorLocation of the puppet
         Overlay,    // Draw() before Present (render thread)
+        Render,     // Minecraft world content into the game (render ring, meshes)
         Count
     };
-    inline const wchar_t* kNames[Count] = {L"tick", L"collision", L"actors", L"position", L"overlay"};
+    inline const wchar_t* kNames[Count] = {L"tick", L"collision", L"actors", L"position", L"overlay", L"render"};
     inline std::atomic<std::uint64_t> total[Count]{};  // QPC ticks
     inline std::atomic<std::uint64_t> calls[Count]{};
 

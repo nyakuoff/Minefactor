@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstring>
 #include <immintrin.h>
 #include <windows.h>
@@ -287,6 +288,34 @@ namespace mf
             done += msgBytes;
         }
         Atomic(tailRef).store(tail, std::memory_order_release);
+    }
+
+    bool Link::ReadWorldEntities(proto::WorldEntities& out) const
+    {
+        if (!base_)
+        {
+            return false;
+        }
+        auto* src = At<proto::WorldEntities>(proto::kOffWorldEntities);
+        auto seq = Atomic(src->seq);
+        for (int attempt = 0; attempt < 16; ++attempt)
+        {
+            const auto s1 = seq.load(std::memory_order_acquire);
+            if (s1 & 1)
+            {
+                _mm_pause();
+                continue;
+            }
+            const auto count = std::min(src->count, proto::kMaxWorldEntities);
+            std::memcpy(&out, src, offsetof(proto::WorldEntities, entities) + sizeof(proto::WorldEntity) * count);
+            out.count = count;
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (seq.load(std::memory_order_relaxed) == s1)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool Link::AcquireOverlayFrame()

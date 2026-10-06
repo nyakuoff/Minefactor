@@ -36,6 +36,8 @@ namespace mf
         // Render ring (consumer): calls fn(type, payload, bytes) for each pending message, up to about
         // maxBytes of payload. Minecraft stalls its render thread when this ring is full.
         void DrainRender(const std::function<void(std::uint32_t, const std::uint8_t*, std::uint32_t)>& fn, std::uint64_t maxBytes);
+        // World entities (arrows, dropped items, ...) + block outline: seqlock read.
+        bool ReadWorldEntities(proto::WorldEntities& out) const;
         // Event ring (consumer). False when empty.
         bool PopEvent(proto::McEvent& out);
 

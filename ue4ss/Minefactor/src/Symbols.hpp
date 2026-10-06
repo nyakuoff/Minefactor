@@ -8,4 +8,6 @@ namespace mf::sym
     inline constexpr std::uintptr_t UWorld_OverlapBlockingTestByChannel = 0x34ADBA0;
     inline constexpr std::uintptr_t FCollisionQueryParams_DefaultQueryParam = 0x84C3B20;
     inline constexpr std::uintptr_t StaticLoadClass = 0x12E3490;
+    inline constexpr std::uintptr_t StaticLoadObject = 0x12E37D0;
+    inline constexpr std::uintptr_t UTexture_UpdateResource = 0x3D2D8F0;
 }
