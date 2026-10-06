@@ -196,11 +196,12 @@ namespace mf
 
         // Every engine object we keep is held weakly and re-checked each tick: the engine may destroy
         // any of them (map changes, streaming, GC), and a stale raw pointer is a crash.
-        FWeakObjectPtr holderRef, blocksRef, sceneRef, entitiesRef, maskedRef, translucentRef;
+        FWeakObjectPtr holderRef, blocksRef, sceneRef, entitiesRef, avatarRef, maskedRef, translucentRef;
         UObject* holder = nullptr;     // this tick's live pointers (refreshed by EnsureHolder)
         UObject* blocks = nullptr;
         UObject* scene = nullptr;
         UObject* entities = nullptr;
+        UObject* avatar = nullptr;  // the player's own body in third person (F5)
         UObject* masked = nullptr;
         UObject* translucent = nullptr;
         std::uint32_t holderEpoch = ~0u;
@@ -232,6 +233,9 @@ namespace mf
         std::vector<int> freeSlots;
         int nextSlot = 0;
         int sceneSections = 0;
+        int avatarSections = 0;
+        Vec3 feetMc{};       // where the player's body goes (Minecraft coords), from PlayerTick
+        bool haveFeet = false;
         bool entitiesShown = false;
         std::uint64_t nextEntities = 0;
 
@@ -302,9 +306,10 @@ namespace mf
             blocks = blocksRef.Get();
             scene = sceneRef.Get();
             entities = entitiesRef.Get();
+            avatar = avatarRef.Get();
             masked = maskedRef.Get();
             translucent = translucentRef.Get();
-            if (holder && blocks && scene && entities && masked && translucent && holderEpoch == epoch)
+            if (holder && blocks && scene && entities && avatar && masked && translucent && holderEpoch == epoch)
             {
                 return true;
             }
@@ -393,6 +398,8 @@ namespace mf
             blocks = AddMeshComponent(holder, pmcClass);
             scene = AddMeshComponent(holder, pmcClass);
             entities = AddMeshComponent(holder, pmcClass);
+            avatar = AddMeshComponent(holder, pmcClass);
+            avatarRef = avatar;
             blocksRef = blocks;
             sceneRef = scene;
             entitiesRef = entities;
@@ -406,7 +413,7 @@ namespace mf
                     reflect::Invoke(call);
                 }
             }
-            for (UObject* c : {scene, entities})
+            for (UObject* c : {scene, entities, avatar})
             {
                 if (auto call = c ? reflect::Begin(c, STR("SetCollisionEnabled")) : reflect::Call{})
                 {
@@ -797,6 +804,46 @@ namespace mf
             sceneSections = used;
         }
 
+        // The player's body as Minecraft draws it in third person, relative to its feet (0 batches:
+        // first person, nothing to draw).
+        void OnAvatar(const std::uint8_t* p, std::uint32_t bytes)
+        {
+            proto::RenAvatar hdr;
+            std::memcpy(&hdr, p, sizeof(hdr));
+            const auto* batches = reinterpret_cast<const proto::RenBatch*>(p + sizeof(hdr));
+            const auto* v = reinterpret_cast<const proto::RenVertex*>(batches + hdr.batchCount);
+            if (sizeof(hdr) + hdr.batchCount * sizeof(proto::RenBatch) + std::size_t(hdr.vertexCount) * sizeof(proto::RenVertex) > bytes)
+            {
+                return;
+            }
+            static Mesh m;
+            int used = 0;
+            for (std::uint32_t b = 0; b < hdr.batchCount && haveFeet; ++b)
+            {
+                const auto& batch = batches[b];
+                UObject* material = std::size_t(batch.first) + batch.count <= hdr.vertexCount ? Material(batch.texture, batch.flags & 1) : nullptr;
+                if (!material)
+                {
+                    continue;
+                }
+                m.Clear();
+                for (std::uint32_t i = batch.first; i + 2 < batch.first + batch.count; i += 3)
+                {
+                    const Vec3 pts[3] = {{feetMc.x + v[i].x, feetMc.y + v[i].y, feetMc.z + v[i].z},
+                                         {feetMc.x + v[i + 1].x, feetMc.y + v[i + 1].y, feetMc.z + v[i + 1].z},
+                                         {feetMc.x + v[i + 2].x, feetMc.y + v[i + 2].y, feetMc.z + v[i + 2].z}};
+                    const double uv[3][2] = {{v[i].u, v[i].v}, {v[i + 1].u, v[i + 1].v}, {v[i + 2].u, v[i + 2].v}};
+                    m.Triangle(pts, uv);
+                }
+                Upload(avatar, used++, m, material, false);
+            }
+            for (int s = used; s < avatarSections; ++s)
+            {
+                CallInt(avatar, STR("ClearMeshSection"), STR("SectionIndex"), s);
+            }
+            avatarSections = used;
+        }
+
         void DestroyLights(std::vector<Light>& list)
         {
             for (auto& l : list)
@@ -984,8 +1031,13 @@ namespace mf
         }
     }
 
-    void RenderTick(UObject* pawn, std::uint32_t epoch)
+    void RenderTick(UObject* pawn, std::uint32_t epoch, const Vec3* feet)
     {
+        haveFeet = feet != nullptr;
+        if (feet)
+        {
+            feetMc = *feet;
+        }
         auto& link = Link::Get();
         const bool ready = pawn && EnsureHolder(pawn, epoch);
         // Textures that came before there was a world to draw in (main menu): kept until there is.
@@ -1046,6 +1098,9 @@ namespace mf
                     break;
                 case proto::kRenScene:
                     OnScene(p, bytes);
+                    break;
+                case proto::kRenAvatar:
+                    OnAvatar(p, bytes);
                     break;
                 case proto::kRenLights:
                     OnLights(p, bytes);

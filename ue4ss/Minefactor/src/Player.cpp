@@ -210,6 +210,87 @@ namespace mf
             return {mc.prevX + (mc.curX - mc.prevX) * a, mc.prevY + (mc.curY - mc.prevY) * a, mc.prevZ + (mc.curZ - mc.prevZ) * a};
         }
 
+        // Minecraft's F5 views through a camera actor of our own (the game's first-person camera stays
+        // untouched); the game's character is hidden meanwhile (Minecraft draws the body).
+        FWeakObjectPtr cameraRef;
+        bool thirdPerson = false;
+
+        void ThirdPerson(UObject* pc, UObject* pawn, const proto::McState& mc, bool on)
+        {
+            UObject* camera = cameraRef.Get();
+            if (on && !camera)
+            {
+                UClass* cls = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.CameraActor"));
+                auto spawn = reflect::Begin(UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, STR("/Script/Engine.Default__GameplayStatics")),
+                                            STR("BeginDeferredActorSpawnFromClass"));
+                if (!cls || !spawn)
+                {
+                    return;
+                }
+                reflect::Set(spawn, STR("WorldContextObject"), pawn);
+                reflect::Set(spawn, STR("ActorClass"), static_cast<UObject*>(cls));
+                if (auto* prop = CastField<FStructProperty>(spawn.function->FindProperty(FName(STR("SpawnTransform"), FNAME_Find))))
+                {
+                    auto* st = prop->GetStruct().Get();
+                    auto* at = &spawn.params[prop->GetOffset_Internal()];
+                    reinterpret_cast<double*>(at + st->FindProperty(FName(STR("Rotation"), FNAME_Find))->GetOffset_Internal())[3] = 1.0;
+                    auto* sc = reinterpret_cast<double*>(at + st->FindProperty(FName(STR("Scale3D"), FNAME_Find))->GetOffset_Internal());
+                    sc[0] = sc[1] = sc[2] = 1.0;
+                }
+                reflect::Set<std::uint8_t>(spawn, STR("CollisionHandlingOverride"), 1);
+                reflect::Invoke(spawn);
+                camera = reflect::Get<UObject*>(spawn, STR("ReturnValue"));
+                if (auto finish = reflect::Begin(UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, STR("/Script/Engine.Default__GameplayStatics")),
+                                                 STR("FinishSpawningActor")))
+                {
+                    reflect::Set(finish, STR("Actor"), camera);
+                    std::memcpy(reflect::ParamAddr(finish, STR("SpawnTransform")), reflect::ParamAddr(spawn, STR("SpawnTransform")),
+                                reflect::ParamSize(spawn, STR("SpawnTransform")));
+                    reflect::Invoke(finish);
+                }
+                cameraRef = camera;
+            }
+            if (on && camera)
+            {
+                // Minecraft's own third-person camera: behind (1) or in front looking back (2), at the
+                // distance it settled on after its own collision.
+                constexpr double kDeg = 3.14159265358979 / 180.0;
+                const double yaw = mc.yaw * kDeg, pitch = mc.pitch * kDeg;
+                const Vec3 fwd{-std::sin(yaw) * std::cos(pitch), -std::sin(pitch), std::cos(yaw) * std::cos(pitch)};
+                const double d = (mc.cameraMode == 2 ? 1.0 : -1.0) * mc.cameraDistance;
+                const Vec3 eye = McToUe({mc.eyeX + fwd.x * d, mc.eyeY + fwd.y * d, mc.eyeZ + fwd.z * d});
+                FRot rot{McPitchToUe(mc.pitch), McYawToUe(mc.yaw), 0};
+                if (mc.cameraMode == 2)
+                {
+                    rot.Yaw += 180.0;
+                    rot.Pitch = -rot.Pitch;
+                }
+                if (auto call = reflect::Begin(camera, STR("K2_SetActorLocationAndRotation")))
+                {
+                    reflect::Set(call, STR("NewLocation"), FVec{eye.x, eye.y, eye.z});
+                    reflect::Set(call, STR("NewRotation"), rot);
+                    reflect::Set(call, STR("bTeleport"), true);
+                    reflect::Invoke(call);
+                }
+            }
+            if (on == thirdPerson)
+            {
+                return;
+            }
+            thirdPerson = on;
+            if (auto call = reflect::Begin(pc, STR("SetViewTargetWithBlend")))
+            {
+                reflect::Set(call, STR("NewViewTarget"), on && camera ? camera : pawn);
+                reflect::Invoke(call);
+            }
+            if (auto call = reflect::Begin(pawn, STR("SetActorHiddenInGame")))
+            {
+                reflect::Set(call, STR("bNewHidden"), on);
+                reflect::Invoke(call);
+            }
+            Log(L"third person {}", on ? L"on" : L"off");
+        }
+
         bool BoolProperty(UObject* object, const TCHAR* name)
         {
             auto* prop = CastField<FBoolProperty>(object->GetClassPrivate()->FindProperty(FName(name, FNAME_Find)));
@@ -419,6 +500,7 @@ namespace mf
             }
             lastPawn = nullptr;
             puppeting = movementOff = fallDamageOff = false;
+            thirdPerson = false;
             overlay::show = false;
             hudHidden = false;
             hudRef = FWeakObjectPtr{};
@@ -446,7 +528,8 @@ namespace mf
         }
         {
             perf::Scope r(perf::Render);
-            RenderTick(pawn, sky.collisionEpoch);  // after the map/epoch bookkeeping above
+            const Vec3 feet = puppeting ? InterpolatedFeet(mc) : Vec3{};
+            RenderTick(pawn, sky.collisionEpoch, puppeting ? &feet : nullptr);  // after the map/epoch bookkeeping above
         }
         if (haveMc && link.McPid() != lastMcPid)
         {
@@ -550,6 +633,8 @@ namespace mf
             perf::Scope act(perf::Actors);
             ActorsTick(pc, pawn, puppeting, mc);
         }
+
+        ThirdPerson(pc, pawn, mc, puppeting && mc.cameraMode != 0);
 
         // Look stays the game's own (its mouse handling, zero latency); Minecraft follows it.
         const FRot rot = ControlRotation(pc);
