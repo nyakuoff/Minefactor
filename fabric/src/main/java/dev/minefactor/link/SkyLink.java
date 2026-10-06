@@ -148,6 +148,34 @@ public final class SkyLink {
 		return qpc() / 10_000;
 	}
 
+	// ---- HostInfo (read) -------------------------------------------------------------------
+
+	/** The host game's loaded save name ("" while unknown), or null without a link. Seqlock read. */
+	public static @org.jspecify.annotations.Nullable String hostWorldName() {
+		MemorySegment s = shm;
+		if (s == null) {
+			return null;
+		}
+		for (int attempt = 0; attempt < 100; attempt++) {
+			int seq1 = (int) INT.getAcquire(s, OFF_HOST_INFO);
+			if ((seq1 & 1) != 0) {
+				Thread.onSpinWait();
+				continue;
+			}
+			byte[] bytes = new byte[56];
+			MemorySegment.copy(s, JAVA_BYTE, OFF_HOST_INFO + 8, bytes, 0, bytes.length);
+			VarHandle.loadLoadFence();
+			if ((int) INT.getAcquire(s, OFF_HOST_INFO) == seq1) {
+				int n = 0;
+				while (n < bytes.length && bytes[n] != 0) {
+					n++;
+				}
+				return new String(bytes, 0, n, StandardCharsets.UTF_8);
+			}
+		}
+		return null;
+	}
+
 	// ---- SkyState (read) -------------------------------------------------------------------
 
 	/** Plain snapshot of SkyState. */

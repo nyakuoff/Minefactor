@@ -18,6 +18,8 @@ public final class MirrorWorld {
 	private static final ResourceKey<WorldPreset> PRESET =
 		ResourceKey.create(Registries.WORLD_PRESET, Identifier.fromNamespaceAndPath(Minefactor.MOD_ID, "mirror"));
 	private static boolean attempted;
+	// The world folder we opened (a copied world keeps its old level name inside, so compare this).
+	private static @org.jspecify.annotations.Nullable String openedWorld;
 	private static long lastLog;
 	// /join: a friend's world for this session (the e4mc link their "Open to LAN" shows); null: our own.
 	private static @org.jspecify.annotations.Nullable String sessionJoin;
@@ -95,7 +97,55 @@ public final class MirrorWorld {
 	}
 
 	/** Every client tick: a note for the player once they're in a world again. */
+	/** "Minefactor_<save>" for the save the game has loaded, or null while it hasn't said. */
+	public static @org.jspecify.annotations.Nullable String desiredWorld() {
+		String name = dev.minefactor.link.SkyLink.hostWorldName();
+		if (name == null || name.isBlank()) {
+			return null;
+		}
+		return Minefactor.WORLD_NAME + "_" + name.replaceAll("[^A-Za-z0-9_-]", "_");
+	}
+
+	/**
+	 * Before per-save worlds there was one shared "Minefactor" world: the first save to open gets a
+	 * copy of it (the original is left alone as a backup), so nothing built so far disappears.
+	 */
+	private static void migrateSharedWorld(Minecraft minecraft, String world) {
+		var source = minecraft.getLevelSource();
+		java.nio.file.Path shared = source.getBaseDir().resolve(Minefactor.WORLD_NAME);
+		java.nio.file.Path claimed = source.getBaseDir().resolve(Minefactor.WORLD_NAME + ".claimed");
+		if (!java.nio.file.Files.isDirectory(shared) || java.nio.file.Files.exists(claimed) || source.levelExists(world)) {
+			return;
+		}
+		java.nio.file.Path target = source.getBaseDir().resolve(world);
+		try (var paths = java.nio.file.Files.walk(shared)) {
+			for (java.nio.file.Path p : (Iterable<java.nio.file.Path>) paths::iterator) {
+				if (p.getFileName().toString().equals("session.lock")) {
+					continue;
+				}
+				java.nio.file.Path to = target.resolve(shared.relativize(p).toString());
+				if (java.nio.file.Files.isDirectory(p)) {
+					java.nio.file.Files.createDirectories(to);
+				} else {
+					java.nio.file.Files.copy(p, to);
+				}
+			}
+			java.nio.file.Files.writeString(claimed, world);
+			Minefactor.LOG.info("Minefactor: copied the shared mirror world into {} (original kept as a backup)", world);
+		} catch (java.io.IOException e) {
+			Minefactor.LOG.warn("Minefactor: couldn't copy the shared mirror world into {}", world, e);
+		}
+	}
+
 	public static void tick(Minecraft minecraft) {
+		// The game loaded another save: leave this world for that save's own.
+		var server = minecraft.getSingleplayerServer();
+		String want = desiredWorld();
+		if (sessionJoin == null && server != null && want != null && minecraft.level != null && openedWorld != null && !want.equals(openedWorld)) {
+			Minefactor.LOG.info("Minefactor: the game switched saves; moving to mirror world {}", want);
+			leaveWorld(minecraft);
+			return;
+		}
 		if (pendingNote != null && minecraft.player != null) {
 			minecraft.gui.hud.getChat().addClientSystemMessage(net.minecraft.network.chat.Component.literal(pendingNote));
 			pendingNote = null;
@@ -143,21 +193,30 @@ public final class MirrorWorld {
 				new net.minecraft.client.multiplayer.ServerData("Minefactor", join, net.minecraft.client.multiplayer.ServerData.Type.OTHER), false, null);
 			return;
 		}
-		if (minecraft.getLevelSource().levelExists(Minefactor.WORLD_NAME)) {
-			Minefactor.LOG.info("Minefactor: opening mirror world");
-			minecraft.createWorldOpenFlows().openWorld(Minefactor.WORLD_NAME, () -> minecraft.gui.setScreen(title));
+		// One Minecraft world per game save: wait until the game says which save is loaded.
+		String world = desiredWorld();
+		if (world == null) {
+			attempted = false;
 			return;
 		}
-		Minefactor.LOG.info("Minefactor: creating mirror world");
+		migrateSharedWorld(minecraft, world);
+		if (minecraft.getLevelSource().levelExists(world)) {
+			Minefactor.LOG.info("Minefactor: opening mirror world {}", world);
+			openedWorld = world;
+			minecraft.createWorldOpenFlows().openWorld(world, () -> minecraft.gui.setScreen(title));
+			return;
+		}
+		Minefactor.LOG.info("Minefactor: creating mirror world {}", world);
+		openedWorld = world;
 		LevelSettings settings = new LevelSettings(
-			Minefactor.WORLD_NAME,
+			world,
 			GameType.SURVIVAL,
 			new LevelSettings.DifficultySettings(Difficulty.NORMAL, false, false),
 			true,
 			WorldDataConfiguration.DEFAULT
 		);
 		minecraft.createWorldOpenFlows().createFreshLevel(
-			Minefactor.WORLD_NAME,
+			world,
 			settings,
 			new WorldOptions(0L, false, false),
 			registries -> registries.lookupOrThrow(Registries.WORLD_PRESET).getOrThrow(PRESET).value().createWorldDimensions(),

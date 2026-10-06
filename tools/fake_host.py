@@ -14,7 +14,7 @@ import time
 import zlib
 
 MAGIC = 0x464E494D  # "MINF"
-VERSION = 1
+VERSION = 2
 NAME = os.environ.get("MINEFACTOR_LINK", "/dev/shm/minefactor_v1")
 OFF_SKY = 0x100
 OFF_MC = 0x200
@@ -58,6 +58,10 @@ class Link:
         self.m[OFF_ENTITIES:OFF_ENTITIES + 0x40] = bytes(0x40)
         self.m[OFF_RENDER:OFF_RENDER + 0x80] = bytes(0x80)
         struct.pack_into("<IIII", self.m, 0, MAGIC, VERSION, os.getpid(), 0)
+        # HostInfo: Minecraft opens one world per save, named after this.
+        self.m[0x140:0x180] = bytes(0x40)
+        struct.pack_into("<II", self.m, 0x140, 2, 1)
+        self.m[0x148:0x148 + 8] = b"fakehost"
         self.front = 2
         self.sky_seq = 0
         self.col_head = 0

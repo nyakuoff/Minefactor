@@ -69,6 +69,7 @@ namespace mf
         // owns so rings and the overlay swap start from a known state.
         auto* header = At<proto::Header>(proto::kOffHeader);
         std::memset(base_ + proto::kOffSkyState, 0, sizeof(proto::SkyState));
+        std::memset(base_ + proto::kOffHostInfo, 0, sizeof(proto::HostInfo));
         std::memset(base_ + proto::kOffOverlayCtl, 0, 0x100);
         std::memset(base_ + proto::kOffInputRing, 0, proto::kInputRingDataOff);
         std::memset(base_ + proto::kOffCollisionRing, 0, proto::kColRingDataOff);
@@ -144,6 +145,29 @@ namespace mf
         std::atomic_thread_fence(std::memory_order_release);
         std::memcpy(reinterpret_cast<std::uint8_t*>(dst) + 4, reinterpret_cast<const std::uint8_t*>(&grid) + 4, sizeof(proto::WaterGrid) - 4);
         seq.store(s + 2, std::memory_order_release);
+    }
+
+    void Link::WriteHostInfo(const std::string& worldName, std::uint32_t flags)
+    {
+        if (!base_)
+        {
+            return;
+        }
+        proto::HostInfo info{};
+        info.flags = flags;
+        std::memcpy(info.worldName, worldName.data(), std::min(worldName.size(), sizeof(info.worldName) - 1));
+        auto* dst = At<proto::HostInfo>(proto::kOffHostInfo);
+        if (std::memcmp(reinterpret_cast<const std::uint8_t*>(dst) + 4, reinterpret_cast<const std::uint8_t*>(&info) + 4, sizeof(info) - 4) == 0)
+        {
+            return;  // unchanged
+        }
+        auto seq = Atomic(dst->seq);
+        const auto s = seq.load(std::memory_order_relaxed);
+        seq.store(s + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        std::memcpy(reinterpret_cast<std::uint8_t*>(dst) + 4, reinterpret_cast<const std::uint8_t*>(&info) + 4, sizeof(info) - 4);
+        seq.store(s + 2, std::memory_order_release);
+        Log(L"host info: save '{}' ({})", std::wstring(worldName.begin(), worldName.end()), (flags & proto::kHostIsServer) ? L"server" : L"client");
     }
 
     bool Link::ReadMcState(proto::McState& out) const

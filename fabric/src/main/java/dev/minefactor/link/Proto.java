@@ -8,7 +8,7 @@ public final class Proto {
 	}
 
 	public static final int MAGIC = 0x464E494D; // "MINF"
-	public static final int VERSION = 1;
+	public static final int VERSION = 2;
 	// The file Abiotic Factor maps (as Z:\dev\shm\minefactor_v1 under Proton). A second client on the
 	// same PC (multiplayer testing) can use its own: -Dminefactor.link=/dev/shm/minefactor_guest.
 	public static final String MAPPING_NAME = System.getProperty("minefactor.link", "/dev/shm/minefactor_v1");
@@ -16,6 +16,8 @@ public final class Proto {
 
 	public static final long OFF_HEADER = 0x0;
 	public static final long OFF_SKY_STATE = 0x100;
+	public static final long OFF_HOST_INFO = 0x140; // HostInfo: seq, flags, worldName[56]
+	public static final int HOST_IS_SERVER = 1;
 	public static final long OFF_MC_STATE = 0x200;
 	public static final long OFF_WATER_GRID = 0x400;
 	public static final int WATER_GRID_SIZE = 16;

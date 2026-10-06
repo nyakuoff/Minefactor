@@ -7,6 +7,7 @@
 
 #include <Unreal/CoreUObject/UObject/Class.hpp>
 #include <Unreal/CoreUObject/UObject/UnrealType.hpp>
+#include <Unreal/FString.hpp>
 #include <Unreal/FText.hpp>
 #include <Unreal/FWeakObjectPtr.hpp>
 #include <Unreal/UObject.hpp>
@@ -287,6 +288,71 @@ namespace mf
             Log(L"third person {}", on ? L"on" : L"off");
         }
 
+        // Which save is loaded, for Minecraft's one-world-per-save: the host's folder name (game
+        // instance), or on a joined client the host's name + its folder name (replicated game state).
+        FWeakObjectPtr gameInstanceRef, gameStateRef;
+
+        std::string Narrow(const FString* s)
+        {
+            std::string out;
+            if (s && s->Len())
+            {
+                for (const TCHAR* c = **s; *c; ++c)
+                {
+                    out += (*c >= 0x20 && *c < 0x7F) ? static_cast<char>(*c) : '_';
+                }
+            }
+            return out;
+        }
+
+        UObject* Cached(FWeakObjectPtr& ref, const TCHAR* className)
+        {
+            if (UObject* o = ref.Get())
+            {
+                return o;
+            }
+            UObject* o = UObjectGlobals::FindFirstOf(className);
+            ref = o;
+            return o;
+        }
+
+        void PublishHostInfo(UObject* pawn)
+        {
+            static std::uint64_t next = 0;
+            const auto now = ::GetTickCount64();
+            if (now < next)
+            {
+                return;
+            }
+            next = now + 1000;
+            bool server = true;
+            if (auto call = reflect::Begin(UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, STR("/Script/Engine.Default__KismetSystemLibrary")),
+                                           STR("IsServer")))
+            {
+                reflect::Set(call, STR("WorldContextObject"), pawn);
+                reflect::Invoke(call);
+                server = reflect::Get<bool>(call, STR("ReturnValue"));
+            }
+            std::string name;
+            if (server)
+            {
+                if (UObject* gi = Cached(gameInstanceRef, STR("Abiotic_GameInstance_C")))
+                {
+                    name = Narrow(gi->GetValuePtrByPropertyNameInChain<FString>(STR("ActiveWorldSaveName")));
+                }
+            }
+            else if (UObject* gs = Cached(gameStateRef, STR("Abiotic_Survival_GameState_C")))
+            {
+                const auto world = Narrow(gs->GetValuePtrByPropertyNameInChain<FString>(STR("WorldSaveName")));
+                const auto host = Narrow(gs->GetValuePtrByPropertyNameInChain<FString>(STR("HostName")));
+                if (!world.empty())
+                {
+                    name = (host.empty() ? std::string("host") : host) + "_" + world;
+                }
+            }
+            Link::Get().WriteHostInfo(name, server ? proto::kHostIsServer : 0u);
+        }
+
         bool BoolProperty(UObject* object, const TCHAR* name)
         {
             auto* prop = CastField<FBoolProperty>(object->GetClassPrivate()->FindProperty(FName(name, FNAME_Find)));
@@ -495,6 +561,8 @@ namespace mf
                 Log(L"player character gone (menu or loading)");
             }
             lastPawn = nullptr;
+            link.WriteHostInfo("", 0);  // menus/loading: Minecraft keeps (or waits for) its world
+            gameStateRef = FWeakObjectPtr{};  // a new session has a new game state
             puppeting = movementOff = fallDamageOff = false;
             thirdPerson = false;
             overlay::show = false;
@@ -628,7 +696,8 @@ namespace mf
 
         {
             perf::Scope act(perf::Actors);
-            ActorsTick(pc, pawn, puppeting, mc);
+            PublishHostInfo(pawn);
+        ActorsTick(pc, pawn, puppeting, mc);
         }
 
         ThirdPerson(pc, pawn, mc, puppeting && mc.cameraMode != 0);

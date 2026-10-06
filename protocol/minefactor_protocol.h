@@ -16,7 +16,7 @@
 namespace minefactor::proto
 {
 	inline constexpr std::uint32_t kMagic = 0x464E494D;  // "MINF"
-	inline constexpr std::uint32_t kVersion = 1;
+	inline constexpr std::uint32_t kVersion = 2;
 	inline constexpr wchar_t       kMappingPath[] = L"Z:\\dev\\shm\\minefactor_v1";
 
 	// 1 Minecraft block == 100 Unreal units (1 m).
@@ -25,6 +25,7 @@ namespace minefactor::proto
 	// ---- region offsets ---------------------------------------------------------------------
 	inline constexpr std::uint64_t kOffHeader = 0x0;
 	inline constexpr std::uint64_t kOffSkyState = 0x100;
+	inline constexpr std::uint64_t kOffHostInfo = 0x140;  // after SkyState, see HostInfo
 	inline constexpr std::uint64_t kOffMcState = 0x200;
 	inline constexpr std::uint64_t kOffOverlayCtl = 0x300;
 	inline constexpr std::uint64_t kOffOverlaySlotHdr = 0x340;  // 3 x 0x40
@@ -91,6 +92,21 @@ namespace minefactor::proto
 		float         gameHour;
 	};
 	static_assert(sizeof(SkyState) == 0x40);
+
+	// ---- host info @0x140 (host -> MC, seqlock) ----------------------------------------------
+	// Which game save is loaded: Minecraft keeps one world per save ("Minefactor_<worldName>").
+	enum HostFlags : std::uint32_t
+	{
+		kHostIsServer = 1u << 0,  // single player or hosting (not a client joined to someone else)
+	};
+
+	struct HostInfo
+	{
+		std::uint32_t seq;
+		std::uint32_t flags;      // HostFlags
+		char          worldName[56];  // UTF-8, NUL-terminated; empty while unknown (menus, loading)
+	};
+	static_assert(sizeof(HostInfo) == 64 && kOffHostInfo + sizeof(HostInfo) <= kOffMcState);
 
 	// ---- MC -> Skyrim state @0x200 (seqlock) ------------------------------------------------
 	enum McFlags : std::uint32_t

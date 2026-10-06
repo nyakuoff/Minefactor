@@ -24,7 +24,7 @@ public abstract class WorldOpenFlowsMixin {
 	private void minefactor$skipBackupPrompt(
 		WorldOpenFlows self, LevelStorageSource.LevelStorageAccess access, boolean oldCustomized, Runnable proceed, Runnable cancel, Operation<Void> original
 	) {
-		if (Minefactor.WORLD_NAME.equals(access.getLevelId())) {
+		if (access.getLevelId().startsWith(Minefactor.WORLD_NAME)) {
 			proceed.run();
 		} else {
 			original.call(self, access, oldCustomized, proceed, cancel);
