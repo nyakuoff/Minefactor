@@ -176,13 +176,14 @@ public final class SkyClient {
 			return;
 		}
 		nextSkyrimCheck = now + 1000;
-		if (ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)) {
+		// The host runs under Wine/Proton: its pid isn't a Linux process id, so ask its heartbeat instead.
+		if (SkyLink.active()) {
 			skyrimGoneSince = 0;
 			return;
 		}
 		if (skyrimGoneSince == 0) {
 			skyrimGoneSince = now;
-		} else if (now - skyrimGoneSince > 5000) {
+		} else if (now - skyrimGoneSince > 20000) {
 			Minefactor.LOG.info("Minefactor: Skyrim (pid {}) has closed; saving and quitting", pid);
 			minecraft.stop();
 		}
