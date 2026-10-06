@@ -225,6 +225,20 @@ namespace mf
         std::map<std::tuple<int, int, int>, std::vector<std::uint8_t>> sectionCache, lightCache;
         bool replay = false;
 
+        // Animated sprites (water, lava, fire, portals): each region of the atlas Minecraft animates
+        // gets its own texture id; every distinct frame is imported once and the sprite's materials
+        // swap between them. Triangles sampling the region are drawn with it (UVs remapped).
+        struct Anim
+        {
+            int x, y, w, h;           // atlas pixels (Minecraft's padded region)
+            std::uint32_t id;         // texture id: kAnimBase + index
+            std::unordered_map<std::uint64_t, FWeakObjectPtr> frames;  // pixel hash -> texture
+            std::uint64_t shown = 0;
+        };
+        constexpr std::uint32_t kAnimBase = 0x40000000;
+        constexpr std::size_t kMaxFrames = 64;
+        std::vector<Anim> anims;
+
         // Minecraft's light-emitting blocks as the game's point lights.
         struct Light
         {
@@ -460,13 +474,108 @@ namespace mf
             reinterpret_cast<void (*)(UObject*)>(Base() + sym::UTexture_UpdateResource)(tex);
             tex->SetRootSet();
             t.object = tex;
-            std::erase_if(materials, [&](const auto& kv) { return std::get<0>(kv.first) == id; });
+            if (id < kAnimBase)
+            {
+                std::erase_if(materials, [&](const auto& kv) { return std::get<0>(kv.first) == id; });
+            }
             if (id == 0)
             {
                 Log(L"render: atlas {}x{} loaded", t.w, t.h);
                 replay = true;  // sections that came before it had no material
             }
             return true;
+        }
+
+        // Point every material of a texture id at a new texture (an animation frame).
+        void Retexture(std::uint32_t id, UObject* tex)
+        {
+            for (const auto& [key, ref] : materials)
+            {
+                UObject* mid = std::get<0>(key) == id ? ref.Get() : nullptr;
+                if (!mid)
+                {
+                    continue;
+                }
+                const bool lit = std::get<1>(key) ? litBlend : litOpaque;
+                if (auto set = reflect::Begin(mid, STR("SetTextureParameterValue")))
+                {
+                    reflect::Set(set, STR("ParameterName"), FName(!lit ? STR("SlateUI") : std::get<1>(key) ? STR("BaseColorTexture") : STR("Texture"), FNAME_Add));
+                    reflect::Set(set, STR("Value"), tex);
+                    reflect::Invoke(set);
+                }
+            }
+        }
+
+        // An animated sprite's current frame (with Minecraft's padding).
+        void OnAtlasRegion(const std::uint8_t* p, std::uint32_t bytes)
+        {
+            proto::RenAtlasRegion r;
+            std::memcpy(&r, p, sizeof(r));
+            const std::size_t n = std::size_t(r.width) * r.height * 4;
+            if (sizeof(r) + n > bytes || !r.width || !r.height)
+            {
+                return;
+            }
+            const std::uint8_t* px = p + sizeof(r);
+            auto it = std::find_if(anims.begin(), anims.end(), [&](const Anim& a) { return a.x == int(r.x) && a.y == int(r.y); });
+            if (it == anims.end())
+            {
+                anims.push_back({int(r.x), int(r.y), int(r.width), int(r.height), kAnimBase + static_cast<std::uint32_t>(anims.size())});
+                it = anims.end() - 1;
+                replay = true;  // sections drawn before we knew this region must split it out
+            }
+            std::uint64_t hash = 1469598103934665603ull;  // FNV-1a
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                hash = (hash ^ px[i]) * 1099511628211ull;
+            }
+            if (hash == it->shown)
+            {
+                return;
+            }
+            UObject* tex = nullptr;
+            if (auto f = it->frames.find(hash); f != it->frames.end())
+            {
+                tex = f->second.Get();
+            }
+            if (!tex && it->frames.size() < kMaxFrames)
+            {
+                Texture t{{}, r.width, r.height, std::vector<std::uint8_t>(px, px + n)};
+                if (Import(it->id, t))
+                {
+                    tex = t.object.Get();
+                    it->frames[hash] = t.object;
+                }
+            }
+            if (!tex)
+            {
+                return;
+            }
+            it->shown = hash;
+            auto& entry = textures[it->id];
+            entry.object = tex;
+            entry.w = r.width;
+            entry.h = r.height;
+            Retexture(it->id, tex);
+        }
+
+        // The animated region (if any) an atlas UV falls in.
+        const Anim* AnimAt(double u, double v)
+        {
+            const auto atlas = textures.find(0);
+            if (anims.empty() || atlas == textures.end())
+            {
+                return nullptr;
+            }
+            const double x = u * atlas->second.w, y = v * atlas->second.h;
+            for (const auto& a : anims)
+            {
+                if (x >= a.x && x < a.x + a.w && y >= a.y && y < a.y + a.h)
+                {
+                    return &a;
+                }
+            }
+            return nullptr;
         }
 
         void AddTexture(std::uint32_t id, std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba)
@@ -523,7 +632,7 @@ namespace mf
             if (!texObj)
             {
                 Log(L"render: texture {} was destroyed; re-importing", texture);
-                if (!Import(texture, tex->second) || !(texObj = tex->second.object.Get()))
+                if (tex->second.rgba.empty() || !Import(texture, tex->second) || !(texObj = tex->second.object.Get()))
                 {
                     return nullptr;
                 }
@@ -710,29 +819,44 @@ namespace mf
                 return;
             }
             const auto key = std::make_tuple(hdr.sx, hdr.sy, hdr.sz);
-            static std::map<std::uint16_t, Mesh> solid;  // by tint
-            static Mesh blended;
-            for (auto& [tint, m] : solid)
+            static std::map<std::pair<std::uint32_t, std::uint16_t>, Mesh> solid;  // (texture, tint)
+            static std::map<std::uint32_t, Mesh> blended;                          // by texture
+            for (auto& [k, m] : solid)
             {
                 m.Clear();
             }
-            blended.Clear();
+            for (auto& [k, m] : blended)
+            {
+                m.Clear();
+            }
             const double ox = hdr.sx * 16.0, oy = hdr.sy * 16.0, oz = hdr.sz * 16.0;
             for (std::uint32_t i = 0; i + 2 < hdr.vertexCount; i += 3)
             {
                 const Vec3 pts[3] = {{ox + v[i].x, oy + v[i].y, oz + v[i].z}, {ox + v[i + 1].x, oy + v[i + 1].y, oz + v[i + 1].z},
                                      {ox + v[i + 2].x, oy + v[i + 2].y, oz + v[i + 2].z}};
-                const double uv[3][2] = {{v[i].u, v[i].v}, {v[i + 1].u, v[i + 1].v}, {v[i + 2].u, v[i + 2].v}};
+                double uv[3][2] = {{v[i].u, v[i].v}, {v[i + 1].u, v[i + 1].v}, {v[i + 2].u, v[i + 2].v}};
+                std::uint32_t texture = 0;
+                if (const Anim* a = AnimAt((uv[0][0] + uv[1][0] + uv[2][0]) / 3, (uv[0][1] + uv[1][1] + uv[2][1]) / 3))
+                {
+                    // Into the sprite's own texture (Minecraft's padded region).
+                    const auto& atlas = textures[0];
+                    for (auto& t : uv)
+                    {
+                        t[0] = (t[0] * atlas.w - a->x) / a->w;
+                        t[1] = (t[1] * atlas.h - a->y) / a->h;
+                    }
+                    texture = a->id;
+                }
                 const auto face = (v[i].flags >> 4) & 7;
                 const Vec3* normal = face && face <= 6 ? &kFaceNormal[face] : nullptr;
                 if (v[i].flags & 2)
                 {
                     const FLinear colors[3] = {Color(v[i].color), Color(v[i + 1].color), Color(v[i + 2].color)};
-                    blended.Triangle(pts, uv, normal, colors);
+                    blended[texture].Triangle(pts, uv, normal, colors);
                 }
                 else
                 {
-                    solid[TintKey(v[i].color)].Triangle(pts, uv, normal);
+                    solid[{texture, TintKey(v[i].color)}].Triangle(pts, uv, normal);
                 }
             }
             auto& slots = sections[key];
@@ -748,11 +872,14 @@ namespace mf
                 }
                 Upload(blocks, slots[used++], m, material, collision);
             };
-            for (const auto& [tint, m] : solid)
+            for (const auto& [k, m] : solid)
             {
-                put(m, Material(0, false, tint), true);
+                put(m, Material(k.first, false, k.second), true);
             }
-            put(blended, Material(0, true), false);
+            for (const auto& [texture, m] : blended)
+            {
+                put(m, Material(texture, true), false);
+            }
             for (std::size_t i = used; i < slots.size(); ++i)
             {
                 CallInt(blocks, STR("ClearMeshSection"), STR("SectionIndex"), slots[i]);
@@ -1128,6 +1255,9 @@ namespace mf
                     break;
                 case proto::kRenScene:
                     OnScene(p, bytes);
+                    break;
+                case proto::kRenAtlasRegion:
+                    OnAtlasRegion(p, bytes);
                     break;
                 case proto::kRenAvatar:
                     OnAvatar(p, bytes);

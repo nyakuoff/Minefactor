@@ -231,7 +231,9 @@ final class SkyAtlas {
 				a.cycle += a.time[k];
 			}
 			a.rowSize = Math.max(1, rowField.getInt(animated));
-			a.interpolate = interpolateField.getBoolean(animated);
+			// Discrete frames only: the host caches each frame as its own texture and swaps between
+			// them, and blended in-between frames would be endless new textures.
+			a.interpolate = false;
 			return a;
 		} catch (ReflectiveOperationException | RuntimeException e) {
 			return null;
