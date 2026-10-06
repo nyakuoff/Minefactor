@@ -53,7 +53,7 @@ public final class SkyCombat {
 	);
 
 	/** Skyrim damage is divided by this for Minecraft (a 15-damage bandit swing = 3 = 1.5 hearts). */
-	public static final float SKYRIM_TO_MC_DAMAGE = 12.0F; // Abiotic Factor damage -> Minecraft (must match the UE side)
+	public static final float SKYRIM_TO_MC_DAMAGE = 15.0F; // Abiotic Factor damage -> Minecraft (must match the UE side)
 
 	private static final Map<Integer, SkyrimActorEntity> PROXIES = new HashMap<>();
 	private static final List<SkyLink.Actor> ACTORS = new ArrayList<>();

@@ -119,6 +119,13 @@ public final class SkyClient {
 			return;
 		}
 
+		// The host runs its own death and respawn; Minecraft's death screen would only leave the player
+		// stuck where it died. Respawn after a moment (the new player is then put where the host's is).
+		if (player.isDeadOrDying() && player.deathTime >= 40) {
+			player.respawn();
+			minecraft.gui.setScreen(null);
+		}
+
 		// A new player object means we just joined or respawned: put it where Skyrim's player is.
 		if (player != lastPlayer) {
 			lastPlayer = player;

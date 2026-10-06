@@ -83,7 +83,7 @@ namespace mf
     namespace
     {
         constexpr double kMcToGameDamage = 6.0;   // Minecraft hit -> game damage (diamond sword 7 -> 42)
-        constexpr double kGameToMcDamage = 12.0;  // must match SkyCombat.SKYRIM_TO_MC_DAMAGE (pest bite 35 -> 3)
+        constexpr double kGameToMcDamage = 15.0;  // must match SkyCombat.SKYRIM_TO_MC_DAMAGE (pest bite 35 -> 2.3)
         constexpr double kMirrorRadius = 64.0;    // blocks
 
         struct FVec
@@ -340,65 +340,38 @@ namespace mf
             }
         }
 
-        // The player's limbs as they were when Minecraft took over: anything taken off them is a hit
-        // Minecraft should feel, and they're put back (Minecraft's health is the one that counts).
-        constexpr const wchar_t* kLimbs[] = {STR("CurrentHealth_Head"), STR("CurrentHealth_Torso"), STR("CurrentHealth_LeftArm"),
-                                             STR("CurrentHealth_RightArm"), STR("CurrentHealth_LeftLeg"), STR("CurrentHealth_RightLeg")};
-        float savedLimbs[6]{};
-        UObject* savedFor = nullptr;
-        bool dying = false;
+        bool dying = false;  // Minecraft's player died; the game's is being killed (cleared per character)
+        UObject* dyingFor = nullptr;
 
-        void GuardPlayerHealth(UObject* pawn)
+        // While Minecraft drives the player the game's own "Invincible" flag is on (as the cheat mods
+        // do it): the game's health can't drop, but damage events still fire and become Minecraft hurts.
+        UObject* invincibleFor = nullptr;
+        bool invincibleWas = false;
+
+        void SetInvincible(UObject* pawn, bool on)
         {
-            float* limbs[6];
-            for (int i = 0; i < 6; ++i)
-            {
-                limbs[i] = pawn->GetValuePtrByPropertyNameInChain<float>(kLimbs[i]);
-                if (!limbs[i])
-                {
-                    return;
-                }
-            }
-            if (savedFor != pawn)
-            {
-                savedFor = pawn;
-                dying = false;
-                for (int i = 0; i < 6; ++i)
-                {
-                    savedLimbs[i] = *limbs[i];
-                }
-                Log(L"guarding player health: head {:.0f} torso {:.0f} arms {:.0f}/{:.0f} legs {:.0f}/{:.0f}", savedLimbs[0], savedLimbs[1],
-                    savedLimbs[2], savedLimbs[3], savedLimbs[4], savedLimbs[5]);
-                return;
-            }
-            if (dying)
+            if (on == (invincibleFor == pawn && pawn))
             {
                 return;
             }
-            float lost = 0;
-            for (int i = 0; i < 6; ++i)
+            if (invincibleFor && !on)
             {
-                if (*limbs[i] < savedLimbs[i])
+                if (auto* flag = invincibleFor->GetValuePtrByPropertyNameInChain<bool>(STR("Invincible")))
                 {
-                    lost += savedLimbs[i] - *limbs[i];
-                    *limbs[i] = savedLimbs[i];
+                    *flag = invincibleWas;
                 }
-            }
-            if (lost <= 0)
-            {
+                invincibleFor = nullptr;
                 return;
             }
-            if (auto rep = reflect::Begin(pawn, STR("OnRep_CurrentHealth")))
+            if (on && pawn)
             {
-                reflect::Invoke(rep);
+                if (auto* flag = pawn->GetValuePtrByPropertyNameInChain<bool>(STR("Invincible")))
+                {
+                    invincibleWas = *flag;
+                    *flag = true;
+                    invincibleFor = pawn;
+                }
             }
-            std::uint32_t attacker = 0;
-            if (auto** by = pawn->GetValuePtrByPropertyNameInChain<UObject*>(STR("LastHitBy")); by && *by)
-            {
-                attacker = static_cast<std::uint32_t>((*by)->GetInternalIndex());
-            }
-            Link::Get().PushInput(proto::kInHurt, proto::kHurtMelee, static_cast<std::int32_t>(lost * 100.0f), static_cast<std::int32_t>(attacker), 0);
-            Log(L"player took {:.1f} game damage -> {:.1f} Minecraft", lost, lost / kGameToMcDamage);
         }
 
         // Damage events on the guarded player, caught before the game's own handlers run: the amount
@@ -489,6 +462,8 @@ namespace mf
         void KillPlayer(UObject* pawn)
         {
             dying = true;
+            dyingFor = pawn;
+            SetInvincible(pawn, false);
             if (auto call = reflect::Begin(Statics(), STR("ApplyDamage")))
             {
                 reflect::Set(call, STR("DamagedActor"), pawn);
@@ -513,10 +488,14 @@ namespace mf
             nextList = now + 1000;
             ListNpcs(pawn);
         }
+        if (pawn != dyingFor)
+        {
+            dying = false;  // a new character (respawned): damage counts again
+        }
         guardedPawn = puppeting ? pawn : nullptr;
+        SetInvincible(pawn, puppeting && !dying);
         if (!puppeting)
         {
-            savedFor = nullptr;
             Link::Get().WriteActors(nullptr, 0);
             proto::McEvent drop;
             while (Link::Get().PopEvent(drop))
@@ -541,7 +520,6 @@ namespace mf
                 KillPlayer(pawn);
             }
         }
-        GuardPlayerHealth(pawn);
     }
 
     void InstallDamageHook()

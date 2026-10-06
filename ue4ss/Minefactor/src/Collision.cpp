@@ -200,8 +200,128 @@ namespace mf
             return true;
         }
 
+        // Exposed voxel faces as triangles (coplanar neighbours merged into rectangles): what
+        // Minecraft's rays use (arrows, thrown things, block targeting, landing on ground).
+        void Triangles(const Bits& bits, int rx, int ry, int rz, std::vector<proto::ColTri>& out)
+        {
+            const float ox = float(rx * kRegion), oy = float(ry * kRegion), oz = float(rz * kRegion);
+            // Unpacked with a one-voxel empty border, so neighbour checks are plain array reads.
+            constexpr int P = kUnits + 2;
+            static std::vector<std::uint8_t> dense(P * P * P);
+            std::fill(dense.begin(), dense.end(), std::uint8_t{0});
+            bool anySolid = false;
+            for (int y = 0; y < kUnits; ++y)
+            {
+                for (int z = 0; z < kUnits; ++z)
+                {
+                    for (int x = 0; x < kUnits; ++x)
+                    {
+                        if (bits[x / 8 + 8 * (z / 8) + 64 * (y / 8)][y % 8] >> ((z % 8) * 8 + (x % 8)) & 1)
+                        {
+                            dense[(x + 1) + P * ((y + 1) + P * (z + 1))] = 1;
+                            anySolid = true;
+                        }
+                    }
+                }
+            }
+            if (!anySolid)
+            {
+                return;
+            }
+            const auto solid = [&](const int (&c)[3]) { return dense[(c[0] + 1) + P * ((c[1] + 1) + P * (c[2] + 1))] != 0; };
+            bool mask[kUnits][kUnits];
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                const int u = (axis + 1) % 3, v = (axis + 2) % 3;
+                for (int dir = -1; dir <= 1; dir += 2)
+                {
+                    for (int d = 0; d < kUnits; ++d)
+                    {
+                        bool any = false;
+                        for (int a = 0; a < kUnits; ++a)
+                        {
+                            for (int b = 0; b < kUnits; ++b)
+                            {
+                                int c[3], n[3];
+                                c[axis] = d, c[u] = a, c[v] = b;
+                                n[axis] = d + dir, n[u] = a, n[v] = b;
+                                mask[a][b] = solid(c) && !solid(n);
+                                any |= mask[a][b];
+                            }
+                        }
+                        if (!any)
+                        {
+                            continue;
+                        }
+                        for (int a = 0; a < kUnits; ++a)
+                        {
+                            for (int b = 0; b < kUnits;)
+                            {
+                                if (!mask[a][b])
+                                {
+                                    ++b;
+                                    continue;
+                                }
+                                int w = 1, h = 1;
+                                while (b + w < kUnits && mask[a][b + w])
+                                {
+                                    ++w;
+                                }
+                                for (bool grow = true; a + h < kUnits && grow; grow && ++h)
+                                {
+                                    for (int k = 0; k < w; ++k)
+                                    {
+                                        grow = grow && mask[a + h][b + k];
+                                    }
+                                }
+                                for (int i = 0; i < h; ++i)
+                                {
+                                    for (int k = 0; k < w; ++k)
+                                    {
+                                        mask[a + i][b + k] = false;
+                                    }
+                                }
+                                // Corners of the rectangle on the face plane, in blocks.
+                                const float plane = (d + (dir > 0 ? 1 : 0)) / 8.0f;
+                                float p[4][3];
+                                const int cu[4] = {a, a + h, a + h, a}, cv[4] = {b, b, b + w, b + w};
+                                for (int i = 0; i < 4; ++i)
+                                {
+                                    float q[3];
+                                    q[axis] = plane;
+                                    q[u] = cu[i] / 8.0f;
+                                    q[v] = cv[i] / 8.0f;
+                                    p[i][0] = ox + q[0];
+                                    p[i][1] = oy + q[1];
+                                    p[i][2] = oz + q[2];
+                                }
+                                // Outward winding (normal along dir on this axis).
+                                const int i1 = dir > 0 ? 1 : 3, i3 = dir > 0 ? 3 : 1;
+                                out.push_back({{p[0][0], p[0][1], p[0][2], p[i1][0], p[i1][1], p[i1][2], p[2][0], p[2][1], p[2][2]}, 0});
+                                out.push_back({{p[0][0], p[0][1], p[0][2], p[2][0], p[2][1], p[2][2], p[i3][0], p[i3][1], p[i3][2]}, 0});
+                                b += w;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         bool Send(std::uint32_t epoch)
         {
+            {
+                std::vector<proto::ColTri> tris;
+                Triangles(job.bits, job.rx, job.ry, job.rz, tris);
+                const int x0 = job.rx * kRegion, y0 = job.ry * kRegion, z0 = job.rz * kRegion;
+                proto::ColRegion head{x0, y0, z0, x0 + kRegion - 1, y0 + kRegion - 1, z0 + kRegion - 1, epoch, static_cast<std::uint32_t>(tris.size())};
+                std::vector<std::uint8_t> payload(sizeof(head) + tris.size() * sizeof(proto::ColTri));
+                std::memcpy(payload.data(), &head, sizeof(head));
+                std::memcpy(payload.data() + sizeof(head), tris.data(), tris.size() * sizeof(proto::ColTri));
+                if (!Link::Get().WriteCollision(proto::kColTris, payload.data(), static_cast<std::uint32_t>(payload.size())))
+                {
+                    return false;
+                }
+            }
             const int x0 = job.rx * kRegion, y0 = job.ry * kRegion, z0 = job.rz * kRegion;
             proto::ColRegion region{x0, y0, z0, x0 + kRegion - 1, y0 + kRegion - 1, z0 + kRegion - 1, epoch, 0};
             std::vector<std::uint8_t> payload(sizeof(region));
