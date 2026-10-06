@@ -139,15 +139,21 @@ namespace mf
                     link.PushInput(proto::kInText, 0, static_cast<std::int32_t>(wp));
                 }
                 return wp != 0x1B || overlay::screenOpen;  // Esc's WM_CHAR follows its keydown
+            // Rapid clicks arrive as double-clicks: a press like any other (letting one through to the
+            // game, whose matching release we swallow, leaves its attack held down forever).
+            case WM_LBUTTONDBLCLK:
             case WM_LBUTTONDOWN: Button(1, true); return true;
             case WM_LBUTTONUP: Button(1, false); return true;
+            case WM_MBUTTONDBLCLK:
             case WM_MBUTTONDOWN: Button(2, true); return true;
             case WM_MBUTTONUP: Button(2, false); return true;
+            case WM_RBUTTONDBLCLK:
             case WM_RBUTTONDOWN: Button(3, true); return true;
             case WM_RBUTTONUP: Button(3, false); return true;
             case WM_XBUTTONDOWN:
+            case WM_XBUTTONDBLCLK:
             case WM_XBUTTONUP:
-                Button(GET_XBUTTON_WPARAM(wp) == XBUTTON1 ? 4 : 5, msg == WM_XBUTTONDOWN);
+                Button(GET_XBUTTON_WPARAM(wp) == XBUTTON1 ? 4 : 5, msg != WM_XBUTTONUP);
                 return true;
             case WM_MOUSEWHEEL:
                 link.PushInput(proto::kInScroll, 0, GET_WHEEL_DELTA_WPARAM(wp));
