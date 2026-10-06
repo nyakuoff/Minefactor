@@ -179,17 +179,26 @@ namespace mf
 
         // ---- state -----------------------------------------------------------------------------
 
-        FWeakObjectPtr holderRef;
-        UObject* blocks = nullptr;    // procedural mesh components on the holder actor
+        // Every engine object we keep is held weakly and re-checked each tick: the engine may destroy
+        // any of them (map changes, streaming, GC), and a stale raw pointer is a crash.
+        FWeakObjectPtr holderRef, blocksRef, sceneRef, entitiesRef, maskedRef, translucentRef;
+        UObject* holder = nullptr;     // this tick's live pointers (refreshed by EnsureHolder)
+        UObject* blocks = nullptr;
         UObject* scene = nullptr;
         UObject* entities = nullptr;
-        UObject* masked = nullptr;    // Widget3DPassThrough materials
+        UObject* masked = nullptr;
         UObject* translucent = nullptr;
         std::uint32_t holderEpoch = ~0u;
         bool broken = false;
 
-        std::unordered_map<std::uint32_t, UObject*> textures;        // Minecraft texture id (0 = atlas) -> UTexture2D
-        std::map<std::pair<std::uint32_t, bool>, UObject*> materials;  // (texture, translucent) -> MID
+        struct Texture
+        {
+            FWeakObjectPtr object;  // UTexture2D
+            std::uint32_t w = 0, h = 0;
+            std::vector<std::uint8_t> rgba;  // kept to re-import if the engine ever drops it
+        };
+        std::unordered_map<std::uint32_t, Texture> textures;                 // Minecraft texture id (0 = atlas)
+        std::map<std::pair<std::uint32_t, bool>, FWeakObjectPtr> materials;  // (texture, translucent) -> MID
 
         struct SectionSlots
         {
@@ -230,14 +239,33 @@ namespace mf
             {
                 return false;
             }
-            if (holderRef.Get() && holderEpoch == epoch)
+            holder = holderRef.Get();
+            blocks = blocksRef.Get();
+            scene = sceneRef.Get();
+            entities = entitiesRef.Get();
+            masked = maskedRef.Get();
+            translucent = translucentRef.Get();
+            if (holder && blocks && scene && entities && masked && translucent && holderEpoch == epoch)
             {
                 return true;
+            }
+            if (holderEpoch == epoch)
+            {
+                Log(L"render: lost engine objects (holder {}, meshes {}/{}/{}, materials {}/{}); rebuilding", holder != nullptr, blocks != nullptr,
+                    scene != nullptr, entities != nullptr, masked != nullptr, translucent != nullptr);
             }
             if (!SymbolsMatch())
             {
                 broken = true;
                 return false;
+            }
+            if (holder)
+            {
+                if (auto destroy = reflect::Begin(holder, STR("K2_DestroyActor")))
+                {
+                    reflect::Invoke(destroy);
+                }
+                holder = nullptr;
             }
             // A new map: everything Minecraft sent for the old one is gone with its actor.
             sections.clear();
@@ -249,6 +277,8 @@ namespace mf
 
             masked = LoadObject(STR("/Engine/EngineMaterials/Widget3DPassThrough_Masked.Widget3DPassThrough_Masked"));
             translucent = LoadObject(STR("/Engine/EngineMaterials/Widget3DPassThrough_Translucent.Widget3DPassThrough_Translucent"));
+            maskedRef = masked;
+            translucentRef = translucent;
             auto* actorClass = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.Actor"));
             auto* pmcClass = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/ProceduralMeshComponent.ProceduralMeshComponent"));
             auto spawn = reflect::Begin(Cdo(STR("/Script/Engine.Default__GameplayStatics")), STR("BeginDeferredActorSpawnFromClass"));
@@ -271,7 +301,7 @@ namespace mf
             IdentityTransform(spawn, STR("SpawnTransform"));
             reflect::Set<std::uint8_t>(spawn, STR("CollisionHandlingOverride"), 1);  // AlwaysSpawn
             reflect::Invoke(spawn);
-            UObject* holder = reflect::Get<UObject*>(spawn, STR("ReturnValue"));
+            holder = reflect::Get<UObject*>(spawn, STR("ReturnValue"));
             if (auto finish = reflect::Begin(Cdo(STR("/Script/Engine.Default__GameplayStatics")), STR("FinishSpawningActor")))
             {
                 reflect::Set(finish, STR("Actor"), holder);
@@ -288,6 +318,9 @@ namespace mf
             blocks = AddMeshComponent(holder, pmcClass);
             scene = AddMeshComponent(holder, pmcClass);
             entities = AddMeshComponent(holder, pmcClass);
+            blocksRef = blocks;
+            sceneRef = scene;
+            entitiesRef = entities;
             // Built blocks: solid to the game's NPCs and props, but on a channel our own collision
             // scan ignores (Minecraft already knows its blocks, and must see them go the moment they break).
             if (blocks)
@@ -310,15 +343,15 @@ namespace mf
             return blocks && scene && entities;
         }
 
-        void AddTexture(std::uint32_t id, std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba, UObject* worldContext)
+        bool Import(std::uint32_t id, Texture& t)
         {
-            const auto png = EncodePng(rgba, w, h);
+            const auto png = EncodePng(t.rgba.data(), t.w, t.h);
             auto call = reflect::Begin(Cdo(STR("/Script/Engine.Default__KismetRenderingLibrary")), STR("ImportBufferAsTexture2D"));
             if (!call)
             {
-                return;
+                return false;
             }
-            reflect::Set(call, STR("WorldContextObject"), worldContext);
+            reflect::Set(call, STR("WorldContextObject"), holder);
             std::vector<TArray<std::uint8_t>*> owned;
             SetArray(call, STR("Buffer"), png, owned);
             reflect::Invoke(call);
@@ -329,8 +362,8 @@ namespace mf
             }
             if (!tex)
             {
-                Log(L"render: texture {} ({}x{}) import failed", id, w, h);
-                return;
+                Log(L"render: texture {} ({}x{}) import failed", id, t.w, t.h);
+                return false;
             }
             // Pixel art: nearest filtering (TF_Nearest), applied by recreating the GPU resource.
             if (auto* filter = tex->GetValuePtrByPropertyNameInChain<std::uint8_t>(STR("Filter")))
@@ -338,29 +371,57 @@ namespace mf
                 *filter = 0;
             }
             reinterpret_cast<void (*)(UObject*)>(Base() + sym::UTexture_UpdateResource)(tex);
-            tex->SetRootSet();  // we hold it until it's replaced; nothing else may reference it yet
-            textures[id] = tex;
+            tex->SetRootSet();
+            t.object = tex;
             std::erase_if(materials, [&](const auto& kv) { return kv.first.first == id; });
             if (id == 0)
             {
-                Log(L"render: atlas {}x{} loaded", w, h);
+                Log(L"render: atlas {}x{} loaded", t.w, t.h);
             }
+            return true;
         }
 
-        UObject* Material(std::uint32_t texture, bool blended, UObject* worldContext)
+        void AddTexture(std::uint32_t id, std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba)
+        {
+            Texture& t = textures[id];
+            t.w = w;
+            t.h = h;
+            t.rgba.assign(rgba, rgba + std::size_t(w) * h * 4);
+            Import(id, t);
+        }
+
+        UObject* Material(std::uint32_t texture, bool blended)
         {
             const auto key = std::make_pair(texture, blended);
             if (auto it = materials.find(key); it != materials.end())
             {
-                return it->second;
+                if (UObject* mid = it->second.Get())
+                {
+                    return mid;
+                }
+                Log(L"render: material for texture {} was destroyed; recreating", texture);
+                materials.erase(it);
             }
             auto tex = textures.find(texture);
+            if (tex == textures.end())
+            {
+                return nullptr;  // not arrived yet
+            }
+            UObject* texObj = tex->second.object.Get();
+            if (!texObj)
+            {
+                Log(L"render: texture {} was destroyed; re-importing", texture);
+                if (!Import(texture, tex->second) || !(texObj = tex->second.object.Get()))
+                {
+                    return nullptr;
+                }
+            }
             auto call = reflect::Begin(Cdo(STR("/Script/Engine.Default__KismetMaterialLibrary")), STR("CreateDynamicMaterialInstance"));
-            if (tex == textures.end() || !call)
+            if (!call)
             {
                 return nullptr;
             }
-            reflect::Set(call, STR("WorldContextObject"), worldContext);
+            reflect::Set(call, STR("WorldContextObject"), holder);
             reflect::Set(call, STR("Parent"), blended ? translucent : masked);
             reflect::Invoke(call);
             UObject* mid = reflect::Get<UObject*>(call, STR("ReturnValue"));
@@ -372,21 +433,10 @@ namespace mf
             if (auto set = reflect::Begin(mid, STR("SetTextureParameterValue")))
             {
                 reflect::Set(set, STR("ParameterName"), FName(STR("SlateUI"), FNAME_Add));
-                reflect::Set(set, STR("Value"), tex->second);
+                reflect::Set(set, STR("Value"), texObj);
                 reflect::Invoke(set);
             }
-            static bool checked = false;
-            if (!checked)
-            {
-                checked = true;
-                if (auto get = reflect::Begin(mid, STR("K2_GetTextureParameterValue")))
-                {
-                    reflect::Set(get, STR("ParameterName"), FName(STR("SlateUI"), FNAME_Add));
-                    reflect::Invoke(get);
-                    Log(L"render: material texture parameter SlateUI {}", reflect::Get<UObject*>(get, STR("ReturnValue")) == tex->second ? L"holds Minecraft's texture" : L"DID NOT TAKE (wrong parameter name?)");
-                }
-            }
-            materials[key] = mid;
+            materials[key] = FWeakObjectPtr(mid);
             return mid;
         }
 
@@ -509,8 +559,8 @@ namespace mf
             {
                 slots.blended = AllocSlot();
             }
-            Upload(blocks, slots.solid, solid, Material(0, false, pawn), true);
-            Upload(blocks, slots.blended, blended, Material(0, true, pawn), false);
+            Upload(blocks, slots.solid, solid, Material(0, false), true);
+            Upload(blocks, slots.blended, blended, Material(0, true), false);
         }
 
         // Everything else Minecraft drew this frame (block entities, mobs, particles), relative to an origin.
@@ -533,7 +583,7 @@ namespace mf
                 {
                     continue;
                 }
-                UObject* material = Material(batch.texture, batch.flags & 1, pawn);
+                UObject* material = Material(batch.texture, batch.flags & 1);
                 if (!material)
                 {
                     continue;  // its texture hasn't arrived yet
@@ -615,7 +665,7 @@ namespace mf
                 return;
             }
             entitiesShown = !m.verts.empty();
-            if (UObject* material = Material(0, false, pawn))
+            if (UObject* material = Material(0, false))
             {
                 Upload(entities, 0, m, material, false);
             }
@@ -637,14 +687,14 @@ namespace mf
         {
             for (const auto& t : pending)
             {
-                AddTexture(t.id, t.w, t.h, t.rgba.data(), pawn);
+                AddTexture(t.id, t.w, t.h, t.rgba.data());
             }
             pending.clear();
         }
         const auto texture = [&](std::uint32_t id, std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba) {
             if (ready)
             {
-                AddTexture(id, w, h, rgba, pawn);
+                AddTexture(id, w, h, rgba);
                 return;
             }
             std::erase_if(pending, [&](const Pending& t) { return t.id == id; });

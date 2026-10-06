@@ -409,12 +409,10 @@ namespace mf
         UObject* pc = Controller();
         UObject* pawn = pc ? Pawn(pc) : nullptr;
         const bool inGame = pawn && pawn->GetClassPrivate()->GetName().starts_with(STR("Abiotic_PlayerCharacter"));
-        {
-            perf::Scope r(perf::Render);
-            RenderTick(inGame ? pawn : nullptr, sky.collisionEpoch);
-        }
+
         if (!inGame)
         {
+            RenderTick(nullptr, sky.collisionEpoch);  // drains the render ring (Minecraft stalls on a full one)
             if (lastPawn)
             {
                 Log(L"player character gone (menu or loading)");
@@ -445,6 +443,10 @@ namespace mf
             }
             Teleport(UeToMc({loc.X, loc.Y, loc.Z - halfHeight}));
             Log(L"player character {} (capsule half height {:.1f} cm), world {:08X}", pawn->GetName(), halfHeight, sky.worldId);
+        }
+        {
+            perf::Scope r(perf::Render);
+            RenderTick(pawn, sky.collisionEpoch);  // after the map/epoch bookkeeping above
         }
         if (haveMc && link.McPid() != lastMcPid)
         {
