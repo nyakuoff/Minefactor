@@ -21,6 +21,7 @@
 #include "Overlay.hpp"
 #include "Perf.hpp"
 #include "Render.hpp"
+#include "Water.hpp"
 #include "Reflect.hpp"
 
 using namespace RC::Unreal;
@@ -627,6 +628,7 @@ namespace mf
             const Vec3 here = puppeting ? Vec3{mc.x, mc.y, mc.z} : UeToMc({loc.X, loc.Y, loc.Z - halfHeight});
             perf::Scope col(perf::Collision);
             CollisionTick(pawn->GetWorld(), here, sky.collisionEpoch);
+            WaterTick(pawn, here, sky.worldId);
         }
 
         {

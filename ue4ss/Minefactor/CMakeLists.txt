@@ -8,6 +8,7 @@ add_library(Minefactor SHARED
     src/Overlay.cpp
     src/Actors.cpp
     src/Render.cpp
+    src/Water.cpp
 )
 set_target_properties(Minefactor PROPERTIES OUTPUT_NAME "main" PREFIX "")
 target_include_directories(Minefactor PRIVATE src "${CMAKE_CURRENT_SOURCE_DIR}/../../protocol")

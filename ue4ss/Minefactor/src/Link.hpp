@@ -26,6 +26,7 @@ namespace mf
 
         void WriteSkyState(const proto::SkyState& state);
         bool ReadMcState(proto::McState& out) const;
+        void WriteWaterGrid(const proto::WaterGrid& grid);
 
         // Input ring (producer; game thread only). Drops the event if MC is a full ring behind.
         void PushInput(proto::InputType type, std::uint16_t code, std::int32_t a = 0, std::int32_t b = 0, std::int32_t c = 0);

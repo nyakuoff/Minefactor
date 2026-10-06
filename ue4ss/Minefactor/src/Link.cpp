@@ -131,6 +131,21 @@ namespace mf
         seq.store(s + 2, std::memory_order_release);
     }
 
+    void Link::WriteWaterGrid(const proto::WaterGrid& grid)
+    {
+        if (!base_)
+        {
+            return;
+        }
+        auto* dst = At<proto::WaterGrid>(proto::kOffWaterGrid);
+        auto seq = Atomic(dst->seq);
+        const auto s = seq.load(std::memory_order_relaxed);
+        seq.store(s + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        std::memcpy(reinterpret_cast<std::uint8_t*>(dst) + 4, reinterpret_cast<const std::uint8_t*>(&grid) + 4, sizeof(proto::WaterGrid) - 4);
+        seq.store(s + 2, std::memory_order_release);
+    }
+
     bool Link::ReadMcState(proto::McState& out) const
     {
         if (!base_)
