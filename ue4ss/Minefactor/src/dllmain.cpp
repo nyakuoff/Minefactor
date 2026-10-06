@@ -37,7 +37,6 @@ public:
         Hook::RegisterEngineTickPreCallback(
             [](auto&, ...) {
                 mf::InputInstall();
-                mf::ActorsDiscoverOnce();
                 mf::PlayerTick();
             },
             {false, false, STR("Minefactor"), STR("Tick")});

@@ -13,6 +13,7 @@
 
 #include "Link.hpp"
 #include "Log.hpp"
+#include "Perf.hpp"
 
 namespace mf::overlay
 {
@@ -297,6 +298,7 @@ float4 PSMain(VSOut i) : SV_Target {
 
         void Draw(IDXGISwapChain* swapIn)
         {
+            perf::Scope scope(perf::Overlay);
             ID3D12CommandQueue* queue = gameQueue.load();
             auto& link = Link::Get();
             if (failed || !queue || !link.Valid())

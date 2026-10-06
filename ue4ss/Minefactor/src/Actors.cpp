@@ -80,45 +80,10 @@ namespace mf
         }
     }
 
-    void ActorsDiscoverOnce()
-    {
-        static std::uint64_t at = ::GetTickCount64() + 10000;  // let the engine finish starting up
-        if (!at || ::GetTickCount64() < at)
-        {
-            return;
-        }
-        at = 0;
-        auto* base = reinterpret_cast<std::uint8_t*>(::GetModuleHandleW(nullptr));
-        auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
-        if (nt->FileHeader.TimeDateStamp != sym::kExeTimestamp)
-        {
-            return;
-        }
-        using LoadClassFn = UClass* (*)(UClass*, UObject*, const wchar_t*, const wchar_t*, std::uint32_t, void*);
-        auto load = reinterpret_cast<LoadClassFn>(base + sym::StaticLoadClass);
-        static const wchar_t* kClasses[] = {
-            L"/Game/Blueprints/Characters/Abiotic_PlayerCharacter.Abiotic_PlayerCharacter_C",
-            L"/Game/Blueprints/Characters/NPCs/NPC_Base_ParentBP.NPC_Base_ParentBP_C",
-            L"/Game/Blueprints/Characters/NPCs/NPC_Monster_Peccary.NPC_Monster_Peccary_C",
-            L"/Game/Blueprints/Characters/NPCs/NPC_Monster_Exor.NPC_Monster_Exor_C",
-            L"/Game/Blueprints/Characters/NPCs/NPC_Grunt_Guard.NPC_Grunt_Guard_C",
-        };
-        for (const auto* path : kClasses)
-        {
-            UClass* cls = load(UObject::StaticClass(), nullptr, path, nullptr, 0, nullptr);
-            if (!cls)
-            {
-                Log(L"discover: couldn't load {}", path);
-                continue;
-            }
-            Describe(cls->GetClassDefaultObject(), L"class");
-        }
-    }
-
     namespace
     {
         constexpr double kMcToGameDamage = 6.0;   // Minecraft hit -> game damage (diamond sword 7 -> 42)
-        constexpr double kGameToMcDamage = 5.0;   // must match SkyCombat.SKYRIM_TO_MC_DAMAGE
+        constexpr double kGameToMcDamage = 12.0;  // must match SkyCombat.SKYRIM_TO_MC_DAMAGE (pest bite 35 -> 3)
         constexpr double kMirrorRadius = 64.0;    // blocks
 
         struct FVec

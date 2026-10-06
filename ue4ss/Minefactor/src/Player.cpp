@@ -19,6 +19,7 @@
 #include "Link.hpp"
 #include "Log.hpp"
 #include "Overlay.hpp"
+#include "Perf.hpp"
 #include "Reflect.hpp"
 
 using namespace RC::Unreal;
@@ -270,9 +271,11 @@ namespace mf
                 return;
             }
             UObject* hud = hudRef.Get();
-            if (!hud)
+            static std::uint64_t nextLookup = 0;
+            if (!hud && ::GetTickCount64() >= nextLookup)
             {
-                hud = UObjectGlobals::FindFirstOf(STR("UW_PlayerHUD_Main_C"));
+                nextLookup = ::GetTickCount64() + 2000;  // a full object scan: never every frame
+                hud = UObjectGlobals::FindFirstOf(STR("W_PlayerHUD_Main_C"));
                 hudRef = hud;
             }
             if (!hud)
@@ -380,6 +383,21 @@ namespace mf
 
     void PlayerTick()
     {
+        perf::Scope scope(perf::Tick);
+        static std::uint64_t nextReport = 0;
+        if (const auto t = ::GetTickCount64(); t >= nextReport)
+        {
+            nextReport = t + 10000;
+            LARGE_INTEGER f{};
+            ::QueryPerformanceFrequency(&f);
+            std::wstring line;
+            for (int i = 0; i < perf::Count; ++i)
+            {
+                const auto n = perf::calls[i].exchange(0), ticks = perf::total[i].exchange(0);
+                line += std::format(L" {} {:.2f} ms avg ({} calls, {:.0f} ms total);", perf::kNames[i], n ? ticks * 1000.0 / f.QuadPart / n : 0.0, n, ticks * 1000.0 / f.QuadPart);
+            }
+            Log(L"perf (10 s):{}", line);
+        }
         auto& link = Link::Get();
         link.Heartbeat();
         // ponytail: render messages are dropped until Phase 4 draws blocks from them; they must be
@@ -506,6 +524,7 @@ namespace mf
         {
             const Vec3 feet = McToUe(InterpolatedFeet(mc));
             lastSet = {feet.x, feet.y, SmoothZ(feet.z + halfHeight, mc.flags & proto::kMcOnGround)};
+            perf::Scope pos(perf::Position);
             SetLocation(pawn, lastSet);
         }
         else if (movementOff && !enabled)
@@ -518,17 +537,48 @@ namespace mf
         if (mcInWorld)
         {
             const Vec3 here = puppeting ? Vec3{mc.x, mc.y, mc.z} : UeToMc({loc.X, loc.Y, loc.Z - halfHeight});
+            perf::Scope col(perf::Collision);
             CollisionTick(pawn->GetWorld(), here, sky.collisionEpoch);
         }
 
-        ActorsTick(pc, pawn, puppeting, mc);
+        {
+            perf::Scope act(perf::Actors);
+            ActorsTick(pc, pawn, puppeting, mc);
+        }
 
         // Look stays the game's own (its mouse handling, zero latency); Minecraft follows it.
         const FRot rot = ControlRotation(pc);
         sky.yaw = static_cast<float>(Normalize(UeYawToMc(rot.Yaw)));
         sky.pitch = static_cast<float>(UePitchToMc(Normalize(rot.Pitch)));
         hostMenu = BoolProperty(pc, STR("bShowMouseCursor"));
-        sky.flags = proto::kSkyInGame | (hostMenu ? proto::kSkyMenuOpen : 0u);
+        // The game loads zones when you walk into their level volumes; until they're in, the floor
+        // ahead may not exist. Minecraft parks its player while we say "loading" (and only lets go
+        // once our scan has ground under it), like the game holds its own player.
+        static std::uint64_t nextLevelCheck = 0;
+        static bool levelLoaded = true;
+        if (const auto t = ::GetTickCount64(); t >= nextLevelCheck)
+        {
+            nextLevelCheck = t + 100;
+            if (auto call = reflect::Begin(pawn, STR("IsLevelLoaded")))
+            {
+                reflect::Set(call, STR("RequireAllOverlapped"), true);
+                reflect::Invoke(call);
+                const bool loaded = reflect::Get<bool>(call, STR("ReturnValue"));
+                if (loaded != levelLoaded)
+                {
+                    levelLoaded = loaded;
+                    Log(L"zone {}", loaded ? L"loaded: Minecraft may move again" : L"loading: holding Minecraft's player");
+                }
+            }
+        }
+        if (puppeting)
+        {
+            // Minecraft re-teleports to sky.pos after a hold: make that a no-op.
+            sky.posX = mc.x;
+            sky.posY = mc.y;
+            sky.posZ = mc.z;
+        }
+        sky.flags = proto::kSkyInGame | (hostMenu ? proto::kSkyMenuOpen : 0u) | (levelLoaded ? 0u : proto::kSkyLoading);
         const bool mcScreen = puppeting && (mc.flags & proto::kMcScreenOpen);
         if (mcScreen && !overlay::screenOpen)
         {
