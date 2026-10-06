@@ -693,7 +693,8 @@ namespace mf
         overlay::show = puppeting;  // Minecraft's HUD stays up behind the game's menus
         overlay::crosshair = puppeting && mc.cameraMode == 0 && !mcScreen && !hostMenu;
         overlay::guiScale = static_cast<int>(mc.guiScale);
-        HideHostHud(puppeting);
+        // The game's menus (pause, inventory, ...) live inside its HUD widget: show it while one is up.
+        HideHostHud(puppeting && !hostMenu);
         sky.gameHour = 12.0f;
 
         const auto now = ::GetTickCount64();
