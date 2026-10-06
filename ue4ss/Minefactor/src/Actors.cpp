@@ -84,7 +84,8 @@ namespace mf
 
     namespace
     {
-        constexpr double kMcToGameDamage = 16.0;  // Minecraft hit -> game damage (diamond sword 7 -> 112)
+        constexpr double kMcToGameDamage = 6.0;   // Minecraft hit on an NPC -> game damage (diamond sword 7 -> 42)
+        constexpr double kMcToWorldDamage = 16.0; // Minecraft hit on a breakable object (crates, glass, ...)
         constexpr double kGameToMcDamage = 15.0;  // must match SkyCombat.SKYRIM_TO_MC_DAMAGE (pest bite 35 -> 2.3)
         constexpr double kMirrorRadius = 64.0;    // blocks
 
@@ -772,7 +773,7 @@ namespace mf
             const bool sharp = e.weapon == proto::kWeaponBlade || e.weapon == proto::kWeaponAxe || e.weapon == proto::kWeaponPierce;
             // Fists too (the game's "punching" type can't hurt resource nodes; Minecraft fists can).
             reflect::Set(damage, STR("DamagedActor"), t.actor);
-            reflect::Set(damage, STR("BaseDamage"), static_cast<float>(e.d * kMcToGameDamage));
+            reflect::Set(damage, STR("BaseDamage"), static_cast<float>(e.d * kMcToWorldDamage));
             reflect::Set(damage, STR("HitFromDirection"), dir);
             std::memcpy(reflect::ParamAddr(damage, STR("HitInfo")), t.raw.data(), std::min<std::size_t>(t.raw.size(), reflect::ParamSize(damage, STR("HitInfo"))));
             reflect::Set(damage, STR("EventInstigator"), pc);
@@ -782,7 +783,7 @@ namespace mf
             static int logged = 0;
             if (logged++ < 10)
             {
-                Log(L"world hit: {} for {:.1f} game damage ({})", t.actor->GetName(), e.d * kMcToGameDamage, sharp ? L"sharp" : L"blunt");
+                Log(L"world hit: {} for {:.1f} game damage ({})", t.actor->GetName(), e.d * kMcToWorldDamage, sharp ? L"sharp" : L"blunt");
             }
         }
 
