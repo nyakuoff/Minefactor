@@ -458,6 +458,145 @@ namespace mf
             *damage = 0.0f;
         }
 
+        // A number property of any float type (Blueprint variables may be float or double).
+        FProperty* NumberProp(UObject* o, const wchar_t* name)
+        {
+            return o ? o->GetPropertyByNameInChain(name) : nullptr;
+        }
+
+        double GetNumber(UObject* o, const wchar_t* name)
+        {
+            FProperty* p = NumberProp(o, name);
+            if (!p)
+            {
+                return 0;
+            }
+            const auto type = p->GetClass().GetName();
+            auto* at = reinterpret_cast<std::uint8_t*>(o) + p->GetOffset_Internal();
+            return type == STR("DoubleProperty") ? *reinterpret_cast<double*>(at) : type == STR("FloatProperty") ? *reinterpret_cast<float*>(at) : 0.0;
+        }
+
+        void SetNumber(UObject* o, const wchar_t* name, double value)
+        {
+            FProperty* p = NumberProp(o, name);
+            if (!p)
+            {
+                return;
+            }
+            const auto type = p->GetClass().GetName();
+            auto* at = reinterpret_cast<std::uint8_t*>(o) + p->GetOffset_Internal();
+            if (type == STR("DoubleProperty"))
+            {
+                *reinterpret_cast<double*>(at) = value;
+            }
+            else if (type == STR("FloatProperty"))
+            {
+                *reinterpret_cast<float*>(at) = static_cast<float>(value);
+            }
+        }
+
+        void Call(UObject* o, const wchar_t* fn)
+        {
+            if (auto call = reflect::Begin(o, fn))
+            {
+                reflect::Invoke(call);
+            }
+        }
+
+        // The game's own hunger, thirst, fatigue and bladder are held full while Minecraft drives the
+        // player (Minecraft's hunger is the one that counts), the way the cheat mods do it.
+        void FreezeNeeds(UObject* pawn)
+        {
+            static std::uint64_t next = 0;
+            const auto now = ::GetTickCount64();
+            if (now < next)
+            {
+                return;
+            }
+            next = now + 1000;
+            SetNumber(pawn, STR("CurrentHunger"), GetNumber(pawn, STR("MaxHunger")));
+            SetNumber(pawn, STR("CurrentThirst"), GetNumber(pawn, STR("MaxThirst")));
+            SetNumber(pawn, STR("CurrentFatigue"), 0.0);
+            SetNumber(pawn, STR("CurrentContinence"), GetNumber(pawn, STR("MaxContinence")));
+            Call(pawn, STR("OnRep_CurrentHunger"));
+            Call(pawn, STR("OnRep_CurrentThirst"));
+            Call(pawn, STR("OnRep_CurrentFatigue"));
+            Call(pawn, STR("OnRep_CurrentContinence"));
+        }
+
+        // Minecraft actions train the game's skills (CharacterSkills enum values).
+        enum Skill : std::uint8_t
+        {
+            kSprinting = 1,
+            kAccuracy = 2,
+            kSneaking = 4,
+            kSharpMelee = 5,
+            kBluntMelee = 6,
+            kCrafting = 8,
+            kFortitude = 14,
+        };
+
+        void AddXp(UObject* pawn, std::uint8_t skill, double amount)
+        {
+            UObject* progression = nullptr;
+            if (auto** p = pawn->GetValuePtrByPropertyNameInChain<UObject*>(STR("CharacterProgressionComponent")))
+            {
+                progression = *p;
+            }
+            auto call = reflect::Begin(progression, STR("Server_AddXPToSkill"));
+            if (!call)
+            {
+                return;
+            }
+            // Params in declaration order: skill (enum byte), amount (number), a bool (true, as the cheat mods pass), out success.
+            int i = 0;
+            for (FProperty* prop : call.function->ForEachProperty())
+            {
+                auto* at = &call.params[prop->GetOffset_Internal()];
+                const auto type = prop->GetClass().GetName();
+                if (i == 0)
+                {
+                    *at = skill;
+                }
+                else if (i == 1)
+                {
+                    if (type == STR("DoubleProperty")) *reinterpret_cast<double*>(at) = amount;
+                    else if (type == STR("FloatProperty")) *reinterpret_cast<float*>(at) = static_cast<float>(amount);
+                    else if (type == STR("IntProperty")) *reinterpret_cast<std::int32_t*>(at) = static_cast<std::int32_t>(std::lround(amount));
+                }
+                else if (i == 2 && type == STR("BoolProperty"))
+                {
+                    *reinterpret_cast<bool*>(at) = true;
+                }
+                ++i;
+            }
+            reflect::Invoke(call);
+        }
+
+        // Sprinting and sneaking while moving: a little XP per second, like the game's own trickle.
+        void MovementXp(UObject* pawn, const proto::McState& mc)
+        {
+            static std::uint64_t next = 0;
+            static double lastX = 0, lastZ = 0;
+            const auto now = ::GetTickCount64();
+            if (now < next)
+            {
+                return;
+            }
+            next = now + 2000;
+            const bool moved = std::hypot(mc.x - lastX, mc.z - lastZ) > 1.0;
+            lastX = mc.x;
+            lastZ = mc.z;
+            if (moved && (mc.flags & proto::kMcSprinting))
+            {
+                AddXp(pawn, kSprinting, 2.0);
+            }
+            if (moved && (mc.flags & proto::kMcSneaking))
+            {
+                AddXp(pawn, kSneaking, 2.0);
+            }
+        }
+
         // Minecraft's player died: so does the game's (its own death and respawn run).
         void KillPlayer(UObject* pawn)
         {
@@ -503,6 +642,8 @@ namespace mf
             }
             return;
         }
+        FreezeNeeds(pawn);
+        MovementXp(pawn, mc);
         if (now >= nextMirror)
         {
             nextMirror = now + 50;
@@ -514,6 +655,15 @@ namespace mf
             if (e.type == proto::kEvHitActor)
             {
                 HitNpc(pc, pawn, e, {mc.eyeX, mc.eyeY, mc.eyeZ});
+                const auto skill = e.weapon == proto::kWeaponArrow ? kAccuracy
+                                   : (e.weapon == proto::kWeaponBlade || e.weapon == proto::kWeaponAxe || e.weapon == proto::kWeaponPierce) ? kSharpMelee
+                                                                                                                                              : kBluntMelee;
+                AddXp(pawn, skill, 3.0);
+            }
+            else if (e.type == proto::kEvSkillUse)
+            {
+                // Skyrim skill ids Minecraft reports: 9 Block, 10 Smithing, 11/12 Heavy/Light Armor.
+                AddXp(pawn, e.formId == 10 ? kCrafting : kFortitude, std::max(1.0f, e.a) * 2.0);
             }
             else if (e.type == proto::kEvPlayerDied && !dying)
             {

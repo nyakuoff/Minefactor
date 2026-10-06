@@ -26,6 +26,8 @@ namespace mf
         // 1/8; finer needs a worker thread (scene queries off the game thread) or reading shapes directly.
         constexpr std::uint8_t kFinest = 2;
         constexpr std::uint64_t kRefreshMs = 5000;  // regions next to the player (doors, lifts)
+        constexpr std::uint64_t kCloseRefreshMs = 1500;  // regions within kCloseBlocks of the player
+        constexpr double kCloseBlocks = 4.0;
 
         // Engine types, layouts from the game's PDB.
         struct FVector { double X, Y, Z; };
@@ -366,7 +368,12 @@ namespace mf
                         {
                             const auto age = now - it->second.at;
                             const bool adjacent = std::abs(dx) <= 1 && std::abs(dz) <= 1 && (dy == 0 || dy == -1);
-                            if (it->second.bits ? !((adjacent || it->second.lossSeen) && age > kRefreshMs) : age <= kEmptyRecheckMs)
+                            // Within reach (doors you're opening, lifts you're in): refreshed more often.
+                            const auto gap = [](double v, int r) { return std::max({0.0, r * double(kRegion) - v, v - (r + 1) * double(kRegion)}); };
+                            const int rx = px + dx, ry = py + dy, rz = pz + dz;
+                            const bool close = std::hypot(gap(p.x, rx), gap(p.y, ry), gap(p.z, rz)) < kCloseBlocks;
+                            const auto refresh = close ? kCloseRefreshMs : kRefreshMs;
+                            if (it->second.bits ? !((adjacent || close || it->second.lossSeen) && age > refresh) : age <= kEmptyRecheckMs)
                             {
                                 continue;
                             }

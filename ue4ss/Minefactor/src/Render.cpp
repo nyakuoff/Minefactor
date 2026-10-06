@@ -93,6 +93,16 @@ namespace mf
             }
         }
 
+        void TransformAt(reflect::Call& call, const wchar_t* param, const FVec& at)
+        {
+            IdentityTransform(call, param);
+            auto* prop = CastField<FStructProperty>(call.function->FindProperty(FName(param, FNAME_Find)));
+            if (FProperty* t = prop ? prop->GetStruct().Get()->FindProperty(FName(STR("Translation"), FNAME_Find)) : nullptr)
+            {
+                std::memcpy(&call.params[prop->GetOffset_Internal() + t->GetOffset_Internal()], &at, sizeof(at));
+            }
+        }
+
         template <class T>
         void SetArray(reflect::Call& call, const wchar_t* param, const std::vector<T>& values, std::vector<TArray<T>*>& owned)
         {
@@ -209,6 +219,16 @@ namespace mf
         bool flipWinding = true;                   // measured from the engine's own box mesh
 
         std::map<std::tuple<int, int, int>, std::vector<int>> sections;  // block section -> mesh section slots
+
+        // Minecraft's light-emitting blocks as the game's point lights.
+        struct Light
+        {
+            FWeakObjectPtr component;
+            float intensity;
+            std::uint8_t kind;  // proto::LightKind
+            float phase;
+        };
+        std::map<std::tuple<int, int, int>, std::vector<Light>> lights;  // by block section
         std::vector<int> freeSlots;
         int nextSlot = 0;
         int sceneSections = 0;
@@ -308,6 +328,7 @@ namespace mf
             }
             // A new map: everything Minecraft sent for the old one is gone with its actor.
             sections.clear();
+            lights.clear();  // their components went with the old holder
             freeSlots.clear();
             nextSlot = 0;
             sceneSections = 0;
@@ -776,6 +797,122 @@ namespace mf
             sceneSections = used;
         }
 
+        void DestroyLights(std::vector<Light>& list)
+        {
+            for (auto& l : list)
+            {
+                if (UObject* c = l.component.Get())
+                {
+                    if (auto call = reflect::Begin(c, STR("K2_DestroyComponent")))
+                    {
+                        reflect::Set(call, STR("Object"), c);
+                        reflect::Invoke(call);
+                    }
+                }
+            }
+            list.clear();
+        }
+
+        // A section's light-emitting blocks (sent after its mesh): torches, lava, glowstone, ...
+        void OnLights(const std::uint8_t* p, std::uint32_t bytes)
+        {
+            proto::RenLights hdr;
+            std::memcpy(&hdr, p, sizeof(hdr));
+            if (sizeof(hdr) + std::size_t(hdr.count) * sizeof(proto::RenLight) > bytes)
+            {
+                return;
+            }
+            auto& list = lights[std::make_tuple(hdr.sx, hdr.sy, hdr.sz)];
+            DestroyLights(list);
+            static UClass* lightClass = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.PointLightComponent"));
+            const auto* l = reinterpret_cast<const proto::RenLight*>(p + sizeof(hdr));
+            for (std::uint32_t i = 0; i < hdr.count && lightClass; ++i)
+            {
+                const Vec3 ue = McToUe({hdr.sx * 16.0 + l[i].x + 0.5, hdr.sy * 16.0 + l[i].y + 0.5, hdr.sz * 16.0 + l[i].z + 0.5});
+                auto add = reflect::Begin(holder, STR("AddComponentByClass"));
+                if (!add)
+                {
+                    break;
+                }
+                reflect::Set(add, STR("Class"), static_cast<UObject*>(lightClass));
+                TransformAt(add, STR("RelativeTransform"), {ue.x, ue.y, ue.z});
+                reflect::Invoke(add);
+                UObject* c = reflect::Get<UObject*>(add, STR("ReturnValue"));
+                if (!c)
+                {
+                    continue;
+                }
+                // ponytail: intensity/reach by eye (unitless 5000 is the engine default); no shadows for cost.
+                const float level = l[i].level / 15.0f;
+                const float intensity = 6000.0f * level;
+                if (auto call = reflect::Begin(c, STR("SetIntensity")))
+                {
+                    reflect::Set(call, STR("NewIntensity"), intensity);
+                    reflect::Invoke(call);
+                }
+                if (auto call = reflect::Begin(c, STR("SetAttenuationRadius")))
+                {
+                    reflect::Set(call, STR("NewRadius"), l[i].level * 100.0f + 100.0f);
+                    reflect::Invoke(call);
+                }
+                if (auto call = reflect::Begin(c, STR("SetLightColor")))
+                {
+                    const std::uint32_t rgb = l[i].color;
+                    const struct
+                    {
+                        float r, g, b, a;
+                    } col{(rgb & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f, ((rgb >> 16) & 0xFF) / 255.0f, 1.0f};
+                    reflect::Set(call, STR("NewLightColor"), col);
+                    reflect::Set(call, STR("bSRGB"), true);
+                    reflect::Invoke(call);
+                }
+                if (auto call = reflect::Begin(c, STR("SetCastShadows")))
+                {
+                    reflect::Set(call, STR("bNewValue"), false);
+                    reflect::Invoke(call);
+                }
+                list.push_back({FWeakObjectPtr(c), intensity, static_cast<std::uint8_t>((l[i].color >> 24) & 0xF), float(i) * 1.7f});
+            }
+            if (list.empty())
+            {
+                lights.erase(std::make_tuple(hdr.sx, hdr.sy, hdr.sz));
+            }
+        }
+
+        // Flames flicker, lava breathes (20 Hz).
+        void AnimateLights()
+        {
+            static std::uint64_t next = 0;
+            const auto now = ::GetTickCount64();
+            if (now < next)
+            {
+                return;
+            }
+            next = now + 50;
+            const double t = now / 1000.0;
+            for (auto& [key, list] : lights)
+            {
+                for (auto& l : list)
+                {
+                    if (l.kind == proto::kLightSteady)
+                    {
+                        continue;
+                    }
+                    UObject* c = l.component.Get();
+                    auto call = c ? reflect::Begin(c, STR("SetIntensity")) : reflect::Call{};
+                    if (!call)
+                    {
+                        continue;
+                    }
+                    const double f = l.kind == proto::kLightFlame
+                                         ? 0.85 + 0.1 * std::sin(t * 13.0 + l.phase) + 0.05 * std::sin(t * 31.0 + l.phase * 2.3)
+                                         : 0.9 + 0.1 * std::sin(t * 1.5 + l.phase);
+                    reflect::Set(call, STR("NewIntensity"), static_cast<float>(l.intensity * f));
+                    reflect::Invoke(call);
+                }
+            }
+        }
+
         // Arrows, tridents, dropped and thrown items: crossed two-sided quads with their item icon,
         // like Minecraft's own flat item rendering; dropped blocks as small cubes.
         void BuildEntities()
@@ -910,7 +1047,15 @@ namespace mf
                 case proto::kRenScene:
                     OnScene(p, bytes);
                     break;
+                case proto::kRenLights:
+                    OnLights(p, bytes);
+                    break;
                 case proto::kRenClearAll:
+                    for (auto& [key, list] : lights)
+                    {
+                        DestroyLights(list);
+                    }
+                    lights.clear();
                     for (const auto& [key, slots] : sections)
                     {
                         for (int s : slots)
@@ -931,6 +1076,10 @@ namespace mf
         {
             nextEntities = ::GetTickCount64() + 33;
             BuildEntities();
+        }
+        if (ready)
+        {
+            AnimateLights();
         }
     }
 }
