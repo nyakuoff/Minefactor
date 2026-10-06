@@ -133,6 +133,11 @@ public class SkyrimActorEntity extends LivingEntity {
 		if (weapon == null && source.getEntity() instanceof LivingEntity attacker) {
 			weapon = attacker.getMainHandItem();
 		}
+		return weaponClass(weapon);
+	}
+
+	/** The impact class of a held item (Proto.WEAPON_*). */
+	public static int weaponClass(@org.jspecify.annotations.Nullable ItemStack weapon) {
 		if (weapon == null || weapon.isEmpty()) {
 			return Proto.WEAPON_UNARMED;
 		}

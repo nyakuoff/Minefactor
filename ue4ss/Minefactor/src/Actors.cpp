@@ -635,6 +635,157 @@ namespace mf
             last = now;
         }
 
+        // ---- world traces (footsteps, breaking things) ----------------------------------------
+
+        struct Trace
+        {
+            bool hit = false;
+            UObject* actor = nullptr;
+            UObject* physMat = nullptr;
+            FVec point{};
+            std::vector<std::uint8_t> raw;  // the FHitResult, to hand on to damage calls
+        };
+
+        Trace LineTrace(UObject* pawn, const FVec& from, const FVec& to, bool complex)
+        {
+            Trace t;
+            static UObject* kismet = UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, STR("/Script/Engine.Default__KismetSystemLibrary"));
+            auto call = reflect::Begin(kismet, STR("LineTraceSingle"));
+            if (!call)
+            {
+                return t;
+            }
+            reflect::Set(call, STR("WorldContextObject"), pawn);
+            reflect::Set(call, STR("Start"), from);
+            reflect::Set(call, STR("End"), to);
+            reflect::Set<std::uint8_t>(call, STR("TraceChannel"), 0);  // Visibility
+            reflect::Set(call, STR("bTraceComplex"), complex);
+            reflect::Set(call, STR("bIgnoreSelf"), true);
+            reflect::Invoke(call);
+            if (!reflect::Get<bool>(call, STR("ReturnValue")))
+            {
+                return t;
+            }
+            const int size = reflect::ParamSize(call, STR("OutHit"));
+            auto* hit = static_cast<std::uint8_t*>(reflect::ParamAddr(call, STR("OutHit")));
+            t.raw.assign(hit, hit + size);
+            if (auto brk = reflect::Begin(Statics(), STR("BreakHitResult")))
+            {
+                std::memcpy(reflect::ParamAddr(brk, STR("Hit")), hit, size);
+                reflect::Invoke(brk);
+                t.hit = true;
+                t.actor = reflect::Get<UObject*>(brk, STR("HitActor"));
+                t.physMat = reflect::Get<UObject*>(brk, STR("PhysMat"));
+                t.point = reflect::Get<FVec>(brk, STR("ImpactPoint"));
+            }
+            return t;
+        }
+
+        // The game's own footstep sounds (its anim notifies never fire: the character is hidden and its
+        // movement held): one per Minecraft step, by the surface under the feet, through the game's
+        // EffectsFunctionLibrary like its AnimBP does.
+        void Footsteps(UObject* pawn, const proto::McState& mc)
+        {
+            static int lastStep = 0;
+            const int step = static_cast<int>(std::floor(mc.walkDist));
+            if (step == lastStep)
+            {
+                return;
+            }
+            lastStep = step;
+            if (!(mc.flags & proto::kMcOnGround) || (mc.flags & (proto::kMcSwimming | proto::kMcFlying | proto::kMcSneaking)))
+            {
+                return;
+            }
+            static UObject* effects = nullptr;
+            if (!effects)
+            {
+                if (LoadClass(L"/Game/Blueprints/Libraries/EffectsFunctionLibrary.EffectsFunctionLibrary_C"))
+                {
+                    effects = UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, STR("/Game/Blueprints/Libraries/EffectsFunctionLibrary.Default__EffectsFunctionLibrary_C"));
+                }
+                if (!effects)
+                {
+                    return;
+                }
+            }
+            const Vec3 feet = McToUe({mc.x, mc.y, mc.z});
+            const Trace t = LineTrace(pawn, {feet.x, feet.y, feet.z + 20.0}, {feet.x, feet.y, feet.z - 60.0}, true);
+            std::uint8_t surface = 0;
+            if (t.physMat)
+            {
+                if (auto* type = t.physMat->GetValuePtrByPropertyNameInChain<std::uint8_t>(STR("SurfaceType")))
+                {
+                    surface = *type;
+                }
+            }
+            const bool sprinting = mc.flags & proto::kMcSprinting;
+            auto get = reflect::Begin(effects, STR("GetSurfaceWalkSound"));
+            if (!get)
+            {
+                return;
+            }
+            // Params in order: Surface (byte), Sprinting (bool), __WorldContext, ReturnValue.
+            int i = 0;
+            for (FProperty* prop : get.function->ForEachProperty())
+            {
+                auto* at = &get.params[prop->GetOffset_Internal()];
+                if (i == 0) *at = surface;
+                else if (i == 1) *reinterpret_cast<bool*>(at) = sprinting;
+                else if (i == 2) *reinterpret_cast<UObject**>(at) = pawn;
+                ++i;
+            }
+            reflect::Invoke(get);
+            UObject* sound = reflect::Get<UObject*>(get, STR("ReturnValue"));
+            if (!sound)
+            {
+                return;
+            }
+            if (auto play = reflect::Begin(Statics(), STR("PlaySound2D")))
+            {
+                reflect::Set(play, STR("WorldContextObject"), pawn);
+                reflect::Set(play, STR("Sound"), sound);
+                reflect::Set(play, STR("VolumeMultiplier"), sprinting ? 1.2f : 0.7f);
+                reflect::Set(play, STR("PitchMultiplier"), sprinting ? 1.225f : 1.0f);
+                reflect::Invoke(play);
+            }
+        }
+
+        // Minecraft hit the game's world (not an NPC): whatever is there takes the hit through the
+        // game's own damage RPC: crates, glass, vents, barrels (resource nodes), ceiling tiles,
+        // webbing (destructibles), deployables... each decides itself whether and when it breaks.
+        void HitWorld(UObject* pc, UObject* pawn, const proto::McEvent& e, const Vec3& eyeMc)
+        {
+            const Vec3 eye = McToUe(eyeMc), at = McToUe({e.a, e.b, e.c});
+            const double dx = at.x - eye.x, dy = at.y - eye.y, dz = at.z - eye.z, len = std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 1.0);
+            const FVec dir{dx / len, dy / len, dz / len};
+            const Trace t = LineTrace(pawn, {eye.x, eye.y, eye.z}, {at.x + dir.X * 50, at.y + dir.Y * 50, at.z + dir.Z * 50}, false);
+            if (!t.actor || e.d <= 0)
+            {
+                return;
+            }
+            auto damage = reflect::Begin(pawn, STR("Request_ApplyDamageToCharacter"));
+            if (!damage)
+            {
+                return;
+            }
+            const bool sharp = e.weapon == proto::kWeaponBlade || e.weapon == proto::kWeaponAxe || e.weapon == proto::kWeaponPierce;
+            // Fists too (the game's "punching" type can't hurt resource nodes; Minecraft fists can).
+            reflect::Set(damage, STR("DamagedActor"), t.actor);
+            reflect::Set(damage, STR("BaseDamage"), static_cast<float>(e.d * kMcToGameDamage));
+            reflect::Set(damage, STR("HitFromDirection"), dir);
+            std::memcpy(reflect::ParamAddr(damage, STR("HitInfo")), t.raw.data(), std::min<std::size_t>(t.raw.size(), reflect::ParamSize(damage, STR("HitInfo"))));
+            reflect::Set(damage, STR("EventInstigator"), pc);
+            reflect::Set(damage, STR("DamageCauser"), pawn);
+            reflect::Set(damage, STR("DamageTypeClass"), static_cast<UObject*>(DamageType(sharp ? proto::kWeaponBlade : proto::kWeaponBlunt, 0)));
+            reflect::Invoke(damage);
+            static int logged = 0;
+            if (logged++ < 10)
+            {
+                Log(L"world hit: {} for {:.1f} game damage ({})", t.actor->GetName(), e.d * kMcToGameDamage, sharp ? L"sharp" : L"blunt");
+            }
+        }
+
         // Minecraft's player died: so does the game's (its own death and respawn run).
         void KillPlayer(UObject* pc, UObject* pawn)
         {
@@ -701,6 +852,7 @@ namespace mf
         {
             ClientHurtFromHealth(pawn);
         }
+        Footsteps(pawn, mc);
         if (now >= nextMirror)
         {
             nextMirror = now + 50;
@@ -716,6 +868,10 @@ namespace mf
                                    : (e.weapon == proto::kWeaponBlade || e.weapon == proto::kWeaponAxe || e.weapon == proto::kWeaponPierce) ? kSharpMelee
                                                                                                                                               : kBluntMelee;
                 AddXp(pawn, skill, 3.0);
+            }
+            else if (e.type == proto::kEvHitWorld)
+            {
+                HitWorld(pc, pawn, e, {mc.eyeX, mc.eyeY, mc.eyeZ});
             }
             else if (e.type == proto::kEvSkillUse)
             {

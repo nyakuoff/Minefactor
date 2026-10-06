@@ -80,6 +80,11 @@ public final class Proto {
 	public static final int HIT_PROJECTILE = 1 << 1;
 	public static final int HIT_SWEEP = 1 << 2;
 	public static final int HIT_FIRE = 1 << 3;
+	// Minecraft hit the host's world (not an actor): a/b/c = hit point (MC coords), d = Minecraft
+	// damage (attack damage x cooldown), weapon = WEAPON_*, flags = TOOL_* bits of the held item.
+	public static final int EV_HIT_WORLD = 6;
+	public static final int TOOL_PICKAXE = 1, TOOL_AXE = 2, TOOL_SHOVEL = 4, TOOL_HOE = 8, TOOL_SWORD = 16;
+
 	public static final int WEAPON_UNARMED = 0;
 	public static final int WEAPON_BLADE = 1;
 	public static final int WEAPON_AXE = 2;
