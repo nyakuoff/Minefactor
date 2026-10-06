@@ -1,6 +1,7 @@
 #include "Actors.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <set>
@@ -19,6 +20,7 @@
 #include "Coords.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
+#include "Player.hpp"
 #include "Reflect.hpp"
 #include "Symbols.hpp"
 
@@ -298,7 +300,9 @@ namespace mf
             const float before = CallGet<float>(npc, STR("GetTotalHealth"));
 
             // A trace against just this NPC's mesh gives a real bone (the game's damage is per limb).
-            auto damage = reflect::Begin(Statics(), STR("ApplyPointDamage"));
+            // The game's own client->server damage RPC (a plain ApplyPointDamage on the server): the
+            // same call works hosting and as a joined client.
+            auto damage = reflect::Begin(pawn, STR("Request_ApplyDamageToCharacter"));
             if (!damage)
             {
                 return;
@@ -322,8 +326,8 @@ namespace mf
             reflect::Set(damage, STR("DamageTypeClass"), static_cast<UObject*>(DamageType(e.weapon, e.flags)));
             reflect::Invoke(damage);
 
-            // Minecraft's knockback, as a shove.
-            if (e.d > 0)
+            // Minecraft's knockback, as a shove (the server moves NPCs: only when we are it).
+            if (e.d > 0 && IsServer())
             {
                 if (auto launch = reflect::Begin(npc, STR("LaunchCharacter")))
                 {
@@ -597,12 +601,58 @@ namespace mf
             }
         }
 
+        constexpr const wchar_t* kLimbs[] = {STR("CurrentHealth_Head"), STR("CurrentHealth_Torso"), STR("CurrentHealth_LeftArm"),
+                                             STR("CurrentHealth_RightArm"), STR("CurrentHealth_LeftLeg"), STR("CurrentHealth_RightLeg")};
+
+        double LimbTotal(UObject* pawn)
+        {
+            double total = 0;
+            for (const auto* limb : kLimbs)
+            {
+                total += GetNumber(pawn, limb);
+            }
+            return total;
+        }
+
+        // Joined client: damage events only fire on the server, but limb health replicates to us,
+        // so a drop is a hit Minecraft should feel (the host's Minefactor heals it back).
+        void ClientHurtFromHealth(UObject* pawn)
+        {
+            static UObject* forPawn = nullptr;
+            static double last = 0;
+            const double now = LimbTotal(pawn);
+            if (pawn != forPawn || dying)
+            {
+                forPawn = pawn;
+                last = now;
+                return;
+            }
+            if (now < last - 0.5)
+            {
+                Link::Get().PushInput(proto::kInHurt, proto::kHurtMelee, static_cast<std::int32_t>((last - now) * 100.0), 0, 0);
+                Log(L"player lost {:.1f} game health (replicated) -> {:.1f} Minecraft", last - now, (last - now) / kGameToMcDamage);
+            }
+            last = now;
+        }
+
         // Minecraft's player died: so does the game's (its own death and respawn run).
-        void KillPlayer(UObject* pawn)
+        void KillPlayer(UObject* pc, UObject* pawn)
         {
             dying = true;
             dyingFor = pawn;
             SetInvincible(pawn, false);
+            if (!IsServer())
+            {
+                // Joined client: ask the server (the game's own self-damage RPC on our controller).
+                if (auto call = reflect::Begin(pc, STR("Request_DamageSelf")))
+                {
+                    reflect::Set(call, STR("Damage"), 100000.0f);
+                    reflect::Set(call, STR("DamageType"), static_cast<UObject*>(DamageType(proto::kWeaponBlunt, 0)));
+                    reflect::Invoke(call);
+                }
+                Log(L"Minecraft player died; asked the server to kill ours");
+                return;
+            }
             if (auto call = reflect::Begin(Statics(), STR("ApplyDamage")))
             {
                 reflect::Set(call, STR("DamagedActor"), pawn);
@@ -642,8 +692,15 @@ namespace mf
             }
             return;
         }
-        FreezeNeeds(pawn);
-        MovementXp(pawn, mc);
+        if (IsServer())
+        {
+            FreezeNeeds(pawn);
+            MovementXp(pawn, mc);  // skill XP is server-only (no client RPC for it)
+        }
+        else
+        {
+            ClientHurtFromHealth(pawn);
+        }
         if (now >= nextMirror)
         {
             nextMirror = now + 50;
@@ -667,7 +724,7 @@ namespace mf
             }
             else if (e.type == proto::kEvPlayerDied && !dying)
             {
-                KillPlayer(pawn);
+                KillPlayer(pc, pawn);
             }
         }
     }
@@ -676,5 +733,27 @@ namespace mf
     {
         Hook::RegisterProcessEventPreCallback([](auto&, UObject* context, UFunction* fn, void* parms) { OnProcessEvent(context, fn, parms); },
                                               {false, false, STR("Minefactor"), STR("PlayerDamage")});
+    }
+
+    void RemoteMinefactorPlayer(UObject* pawn)
+    {
+        static std::unordered_map<UObject*, std::array<double, 6>> full;  // best limb values seen
+        auto& best = full[pawn];
+        for (int i = 0; i < 6; ++i)
+        {
+            const double v = GetNumber(pawn, kLimbs[i]);
+            if (v > best[i])
+            {
+                best[i] = v;
+            }
+            else if (v > 0 && v < best[i])
+            {
+                SetNumber(pawn, kLimbs[i], best[i]);  // healed back on the server (after it replicated the hit)
+            }
+        }
+        SetNumber(pawn, STR("CurrentHunger"), GetNumber(pawn, STR("MaxHunger")));
+        SetNumber(pawn, STR("CurrentThirst"), GetNumber(pawn, STR("MaxThirst")));
+        SetNumber(pawn, STR("CurrentFatigue"), 0.0);
+        SetNumber(pawn, STR("CurrentContinence"), GetNumber(pawn, STR("MaxContinence")));
     }
 }

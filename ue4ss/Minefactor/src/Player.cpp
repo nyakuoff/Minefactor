@@ -358,6 +358,10 @@ namespace mf
                 UObject* cmc = Component(other, STR("CharacterMovement"));
                 auto* mode = cmc ? cmc->GetValuePtrByPropertyNameInChain<std::uint8_t>(STR("MovementMode")) : nullptr;
                 const bool minefactor = mode && *mode == kMoveFlying;
+                if (minefactor)
+                {
+                    RemoteMinefactorPlayer(other);
+                }
                 for (const TCHAR* flag : {STR("bServerAcceptClientAuthoritativePosition"), STR("bIgnoreClientMovementErrorChecksAndCorrection")})
                 {
                     auto* prop = cmc ? CastField<FBoolProperty>(cmc->GetPropertyByNameInChain(flag)) : nullptr;
@@ -571,6 +575,11 @@ namespace mf
         {
             return isServer ? kMoveNone : kMoveFlying;
         }
+    }
+
+    bool IsServer()
+    {
+        return isServer;
     }
 
     bool Puppeting()
