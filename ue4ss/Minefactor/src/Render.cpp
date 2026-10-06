@@ -220,6 +220,10 @@ namespace mf
         bool flipWinding = true;                   // measured from the engine's own box mesh
 
         std::map<std::tuple<int, int, int>, std::vector<int>> sections;  // block section -> mesh section slots
+        // Minecraft sends a section's mesh and lights once (when built or changed): our own copy of
+        // the latest, re-applied whenever our meshes are rebuilt or the atlas (re)arrives.
+        std::map<std::tuple<int, int, int>, std::vector<std::uint8_t>> sectionCache, lightCache;
+        bool replay = false;
 
         // Minecraft's light-emitting blocks as the game's point lights.
         struct Light
@@ -334,6 +338,7 @@ namespace mf
             // A new map: everything Minecraft sent for the old one is gone with its actor.
             sections.clear();
             lights.clear();  // their components went with the old holder
+            replay = true;
             freeSlots.clear();
             nextSlot = 0;
             sceneSections = 0;
@@ -459,6 +464,7 @@ namespace mf
             if (id == 0)
             {
                 Log(L"render: atlas {}x{} loaded", t.w, t.h);
+                replay = true;  // sections that came before it had no material
             }
             return true;
         }
@@ -1088,6 +1094,28 @@ namespace mf
                     }
                     return;
                 }
+                if (type == proto::kRenSection || type == proto::kRenLights)
+                {
+                    std::int32_t k[3];
+                    std::memcpy(k, p, sizeof(k));
+                    const auto key = std::make_tuple(k[0], k[1], k[2]);
+                    auto& cache = type == proto::kRenSection ? sectionCache : lightCache;
+                    std::uint32_t count;
+                    std::memcpy(&count, p + 12, sizeof(count));
+                    if (count == 0)
+                    {
+                        cache.erase(key);
+                    }
+                    else
+                    {
+                        cache[key].assign(p, p + bytes);
+                    }
+                }
+                else if (type == proto::kRenClearAll)
+                {
+                    sectionCache.clear();
+                    lightCache.clear();
+                }
                 if (!ready)
                 {
                     return;
@@ -1132,6 +1160,19 @@ namespace mf
         {
             nextEntities = ::GetTickCount64() + 33;
             BuildEntities();
+        }
+        if (ready && replay && textures.contains(0))
+        {
+            replay = false;
+            for (const auto& [key, data] : sectionCache)
+            {
+                OnSection(data.data(), static_cast<std::uint32_t>(data.size()));
+            }
+            for (const auto& [key, data] : lightCache)
+            {
+                OnLights(data.data(), static_cast<std::uint32_t>(data.size()));
+            }
+            Log(L"render: re-applied {} block sections and {} light sets", sectionCache.size(), lightCache.size());
         }
         if (ready)
         {
