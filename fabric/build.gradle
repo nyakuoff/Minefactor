@@ -4,6 +4,13 @@ plugins {
 }
 
 repositories {
+	// Modrinth: e4mc ("Open to LAN" gives a link friends can join over the internet: co-op).
+	maven {
+		url = "https://api.modrinth.com/maven"
+		content {
+			includeGroup "maven.modrinth"
+		}
+	}
 	// Add repositories to retrieve artifacts from in here.
 	// You should only use this when depending on other mods because
 	// Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
@@ -36,6 +43,9 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// e4mc 6.2.2 (Fabric, 26.1-26.3): co-op friends join the host's Minecraft world with /join <link>.
+	runtimeOnly "maven.modrinth:e4mc:AouleFRY"
 
 	testImplementation platform("org.junit:junit-bom:5.11.4")
 	testImplementation "org.junit.jupiter:junit-jupiter"
