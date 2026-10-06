@@ -41,6 +41,7 @@ namespace mf
         };
 
         constexpr std::uint8_t kMoveNone = 0;
+        constexpr std::uint8_t kMoveFlying = 5;
         constexpr std::uint8_t kMoveWalking = 1;
         constexpr double kTeleportCm = 200.0;  // the game moved the player further than this: re-sync MC
 
@@ -126,6 +127,11 @@ namespace mf
             auto** ptr = actor->GetValuePtrByPropertyNameInChain<UObject*>(property);
             return ptr ? *ptr : nullptr;
         }
+
+        // While Minecraft drives: the game's own movement held. On a joined client "flying" rather
+        // than "none", so the engine keeps sending our position to the server (which the host's
+        // Minefactor accepts, see AcceptRemoteMinefactorPlayers).
+        std::uint8_t HeldMode();
 
         void SetMovementMode(UObject* pawn, std::uint8_t mode)
         {
@@ -291,6 +297,7 @@ namespace mf
         // Which save is loaded, for Minecraft's one-world-per-save: the host's folder name (game
         // instance), or on a joined client the host's name + its folder name (replicated game state).
         FWeakObjectPtr gameInstanceRef, gameStateRef;
+        bool isServer = true;  // single player / hosting (from PublishHostInfo)
 
         std::string Narrow(const FString* s)
         {
@@ -314,6 +321,53 @@ namespace mf
             UObject* o = UObjectGlobals::FindFirstOf(className);
             ref = o;
             return o;
+        }
+
+        // Co-op, on the host: other players' characters held in "flying" while walking are driven
+        // by their own Minefactor; take the positions they report as-is (no server corrections).
+        void AcceptRemoteMinefactorPlayers(UObject* pawn)
+        {
+            static std::uint64_t next = 0;
+            const auto now = ::GetTickCount64();
+            if (!isServer || now < next)
+            {
+                return;
+            }
+            next = now + 1000;
+            static UClass* cls = nullptr;
+            if (!cls)
+            {
+                cls = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Game/Blueprints/Characters/Abiotic_PlayerCharacter.Abiotic_PlayerCharacter_C"));
+            }
+            auto call = reflect::Begin(UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, STR("/Script/Engine.Default__GameplayStatics")),
+                                       STR("GetAllActorsOfClass"));
+            if (!cls || !call)
+            {
+                return;
+            }
+            reflect::Set(call, STR("WorldContextObject"), pawn);
+            reflect::Set(call, STR("ActorClass"), static_cast<UObject*>(cls));
+            auto* out = reflect::SetArrayParam<UObject*>(call, STR("OutActors"));
+            reflect::Invoke(call);
+            for (UObject* other : *out)
+            {
+                if (!other || other == pawn)
+                {
+                    continue;
+                }
+                UObject* cmc = Component(other, STR("CharacterMovement"));
+                auto* mode = cmc ? cmc->GetValuePtrByPropertyNameInChain<std::uint8_t>(STR("MovementMode")) : nullptr;
+                const bool minefactor = mode && *mode == kMoveFlying;
+                for (const TCHAR* flag : {STR("bServerAcceptClientAuthoritativePosition"), STR("bIgnoreClientMovementErrorChecksAndCorrection")})
+                {
+                    auto* prop = cmc ? CastField<FBoolProperty>(cmc->GetPropertyByNameInChain(flag)) : nullptr;
+                    if (prop)
+                    {
+                        prop->SetPropertyValueInContainer(cmc, minefactor);
+                    }
+                }
+            }
+            out->~TArray();
         }
 
         void PublishHostInfo(UObject* pawn)
@@ -350,6 +404,7 @@ namespace mf
                     name = (host.empty() ? std::string("host") : host) + "_" + world;
                 }
             }
+            isServer = server;
             Link::Get().WriteHostInfo(name, server ? proto::kHostIsServer : 0u);
         }
 
@@ -510,6 +565,14 @@ namespace mf
         }
     }
 
+    namespace
+    {
+        std::uint8_t HeldMode()
+        {
+            return isServer ? kMoveNone : kMoveFlying;
+        }
+    }
+
     bool Puppeting()
     {
         return puppeting;
@@ -617,7 +680,7 @@ namespace mf
                 Message(pawn, enabled ? L"Minefactor: Minecraft controls ON (F8 to turn off)" : L"Minefactor: Minecraft controls OFF", enabled ? 0 : 1);
                 if (enabled)
                 {
-                    SetMovementMode(pawn, kMoveNone);  // hold still while Minecraft comes to us
+                    SetMovementMode(pawn, HeldMode());  // hold still while Minecraft comes to us
                     movementOff = true;
                     Teleport(UeToMc({loc.X, loc.Y, loc.Z - halfHeight}));
                 }
@@ -669,7 +732,7 @@ namespace mf
         }
         if (enabled && !movementOff)  // e.g. a new character after respawning
         {
-            SetMovementMode(pawn, kMoveNone);
+            SetMovementMode(pawn, HeldMode());
             movementOff = true;
         }
         if (puppeting)
@@ -697,6 +760,7 @@ namespace mf
         {
             perf::Scope act(perf::Actors);
             PublishHostInfo(pawn);
+        AcceptRemoteMinefactorPlayers(pawn);
         ActorsTick(pc, pawn, puppeting, mc);
         }
 
